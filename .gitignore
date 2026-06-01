@@ -1,0 +1,32 @@
+# Entorno virtual
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Configuración local
+.env
+.env.local
+
+# VS Code
+.vscode/
+
+# Modelos entrenados
+models/
+*.pkl
+*.joblib
+
+# Caches
+.cache/
+.pytest_cache/
+
+# Logs temporales
+*.log
+
+# Sistema operativo
+.DS_Store
+Thumbs.db

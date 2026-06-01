@@ -1,0 +1,48 @@
+{
+    "total_incidents": 464,
+    "by_severity": {
+        "critical": 368,
+        "warning": 96
+    },
+    "by_type": {
+        "repeated_unauthorized_access": 117,
+        "brute_force_attempt": 87,
+        "critical_route_server_error": 79,
+        "medium_risk_score": 68,
+        "database_timeout": 44,
+        "payment_failure_outage": 41,
+        "unauthorized_admin_access": 13,
+        "slow_response": 7,
+        "ml_anomaly": 5,
+        "multiple_failed_logins_user": 3
+    },
+    "by_sources": {
+        "rule_engine": 322,
+        "ml_anomaly_detector, rule_engine": 141,
+        "ml_anomaly_detector": 1
+    },
+    "top_routes": {
+        "/api/enrollments": 66,
+        "/api/payments": 65,
+        "/api/database": 58,
+        "/api/admin/users": 54,
+        "/api/orders": 51,
+        "/api/reports": 30,
+        "/dashboard/admin": 21,
+        "/login": 17,
+        "/api/inventory": 17,
+        "/api/students": 16
+    },
+    "top_ips": {
+        "45.90.130.77": 54,
+        "10.0.0.15": 46,
+        "190.12.45.11": 44,
+        "181.65.22.30": 43,
+        "10.0.0.16": 34,
+        "181.65.22.31": 33,
+        "190.12.45.12": 32,
+        "45.90.130.78": 32,
+        "200.48.10.5": 29,
+        "192.168.1.12": 26
+    }
+}

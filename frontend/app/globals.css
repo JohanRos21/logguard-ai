@@ -1,0 +1,73 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+  background: #07111f;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  background:
+    linear-gradient(rgba(56, 189, 248, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.04) 1px, transparent 1px),
+    #07111f;
+  background-size: 34px 34px;
+  color: #e5edf8;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+button,
+select {
+  font: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0b1628;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #24334f;
+  border-radius: 8px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #334666;
+}
+
+.dashboard-shell {
+  min-height: 100vh;
+  background:
+    linear-gradient(180deg, rgba(7, 17, 31, 0.7), rgba(7, 17, 31, 1) 420px),
+    linear-gradient(135deg, rgba(56, 189, 248, 0.09), transparent 26%),
+    linear-gradient(315deg, rgba(52, 211, 153, 0.06), transparent 28%);
+}
+
+.stable-table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.stable-table th,
+.stable-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

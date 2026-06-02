@@ -1,0 +1,47 @@
+{
+    "total_sequences": 1875,
+    "window_size": 20,
+    "stride": 5,
+    "group_by": "ip",
+    "label_distribution": {
+        "normal": 975,
+        "anomaly": 900
+    },
+    "top_entities": {
+        "172.16.10.1": 15,
+        "172.16.10.10": 15,
+        "172.16.10.11": 15,
+        "172.16.10.12": 15,
+        "172.16.10.13": 15,
+        "172.16.10.14": 15,
+        "172.16.10.15": 15,
+        "172.16.10.16": 15,
+        "172.16.10.17": 15,
+        "172.16.10.18": 15
+    },
+    "avg_response_time_mean": 1316.9117333333334,
+    "max_risk_score_mean": 9.166933333333333,
+    "anomaly_rate": 0.48,
+    "top_scenarios": {
+        "normal_traffic": 747,
+        "controlled_warning, normal_traffic": 90,
+        "brute_force, normal_traffic": 60,
+        "normal_traffic, payment_outage": 60,
+        "database_outage, normal_traffic": 60,
+        "normal_traffic, performance_degradation": 60,
+        "admin_probe, normal_traffic": 60,
+        "fp_login_retry, normal_traffic": 45,
+        "fp_burst_normal": 45,
+        "mixed_brute_force+admin_probe": 30,
+        "mixed_brute_force+payment_outage": 30,
+        "mixed_payment_outage+database_outage": 30,
+        "mixed_database_outage+performance_degradation": 30,
+        "mixed_performance_degradation+brute_force": 30,
+        "mixed_admin_probe+database_outage": 30,
+        "mixed_payment_outage+admin_probe": 30,
+        "mixed_brute_force+database_outage": 30,
+        "mixed_performance_degradation+payment_outage": 30,
+        "mixed_admin_probe+performance_degradation": 30,
+        "brute_force_low, normal_traffic": 30
+    }
+}

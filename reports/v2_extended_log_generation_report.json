@@ -1,0 +1,71 @@
+{
+    "version": "v2",
+    "total_logs": 11250,
+    "logs_per_entity": 90,
+    "anomaly_ratio": 0.2503,
+    "entity_summary": {
+        "normal": 44,
+        "warning": 6,
+        "anomaly_base": 20,
+        "bloque_a_mixed": 20,
+        "bloque_b_fp": 15,
+        "bloque_c_intensity": 20,
+        "total_entities": 125
+    },
+    "severity_distribution": {
+        "normal": 8145,
+        "critical": 2816,
+        "warning": 289
+    },
+    "scenario_label_distribution": {
+        "normal": 7686,
+        "anomaly": 3564
+    },
+    "scenario_distribution": {
+        "normal_traffic": 7185,
+        "fp_burst_normal": 270,
+        "brute_force": 216,
+        "payment_outage": 216,
+        "database_outage": 216,
+        "admin_probe": 216,
+        "performance_degradation": 180,
+        "mixed_brute_force+admin_probe": 180,
+        "mixed_brute_force+payment_outage": 180,
+        "mixed_payment_outage+database_outage": 180,
+        "mixed_database_outage+performance_degradation": 180,
+        "mixed_performance_degradation+brute_force": 180,
+        "mixed_admin_probe+database_outage": 180,
+        "mixed_payment_outage+admin_probe": 180,
+        "mixed_brute_force+database_outage": 180,
+        "mixed_performance_degradation+payment_outage": 180,
+        "mixed_admin_probe+performance_degradation": 180,
+        "payment_outage_high": 144,
+        "brute_force_high": 126,
+        "admin_probe_high": 126,
+        "controlled_warning": 108,
+        "database_outage_high": 108,
+        "performance_degradation_high": 108,
+        "fp_maintenance_slow": 63,
+        "fp_login_retry": 54,
+        "performance_degradation_low": 30,
+        "brute_force_low": 24,
+        "payment_outage_low": 24,
+        "database_outage_low": 20,
+        "admin_probe_low": 10,
+        "fp_isolated_403": 3,
+        "fp_single_500": 3
+    },
+    "event_type_distribution": {
+        "record_created": 2075,
+        "page_view": 2071,
+        "login_success": 2031,
+        "data_loaded": 1968,
+        "unauthorized_access": 755,
+        "slow_response": 605,
+        "login_failed": 526,
+        "payment_failed": 472,
+        "database_timeout": 396,
+        "server_error": 327,
+        "validation_error": 24
+    }
+}

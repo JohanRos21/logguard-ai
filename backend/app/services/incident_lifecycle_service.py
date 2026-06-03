@@ -5,6 +5,10 @@ from sqlalchemy import desc, func
 
 from backend.app.database import get_db_session
 from backend.app.db_models import RealIncident
+from backend.app.services.notification_service import (
+    create_incident_notification_if_enabled,
+    enqueue_notification_event,
+)
 from backend.app.services.real_incident_service import serialize_incident
 
 
@@ -87,6 +91,8 @@ def resolve_incident(
     resolved_by: Optional[str] = None,
     resolution_note: Optional[str] = None,
 ) -> Dict[str, Any]:
+    notification_event_id = None
+
     with get_db_session() as session:
         incident = get_incident_or_raise(session, incident_id)
 
@@ -105,9 +111,19 @@ def resolve_incident(
             note=resolution_note,
         )
         incident.updated_at = utcnow()
+        notification_event_id = create_incident_notification_if_enabled(
+            db=session,
+            incident=incident,
+            event_type="incident.resolved",
+        )
         session.flush()
 
-        return serialize_incident(incident)
+        serialized_incident = serialize_incident(incident)
+
+    if notification_event_id:
+        enqueue_notification_event(notification_event_id)
+
+    return serialized_incident
 
 
 def reopen_incident(
@@ -115,6 +131,8 @@ def reopen_incident(
     reopened_by: Optional[str] = None,
     note: Optional[str] = None,
 ) -> Dict[str, Any]:
+    notification_event_id = None
+
     with get_db_session() as session:
         incident = get_incident_or_raise(session, incident_id)
         previous_status = incident.status
@@ -139,9 +157,19 @@ def reopen_incident(
             note=note,
         )
         incident.updated_at = utcnow()
+        notification_event_id = create_incident_notification_if_enabled(
+            db=session,
+            incident=incident,
+            event_type="incident.reopened",
+        )
         session.flush()
 
-        return serialize_incident(incident)
+        serialized_incident = serialize_incident(incident)
+
+    if notification_event_id:
+        enqueue_notification_event(notification_event_id)
+
+    return serialized_incident
 
 
 def list_incidents_by_status(

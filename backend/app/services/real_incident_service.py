@@ -8,6 +8,10 @@ from sqlalchemy.orm import Session
 
 from backend.app.database import get_db_session
 from backend.app.db_models import IngestedSequencePrediction, RealIncident
+from backend.app.services.notification_service import (
+    create_incident_notification_if_enabled,
+    enqueue_created_notification_events,
+)
 
 
 ADMIN_ROUTES = {
@@ -297,7 +301,7 @@ def create_incident(
     session: Session,
     hash_value: str,
     aggregate: Dict[str, Any],
-) -> None:
+) -> RealIncident:
     incident = RealIncident(
         incident_id=incident_id_from_hash(hash_value),
         incident_hash=hash_value,
@@ -306,12 +310,14 @@ def create_incident(
 
     session.add(incident)
 
+    return incident
+
 
 def update_incident(
     incident: RealIncident,
     new_predictions: List[IngestedSequencePrediction],
     incident_type: str,
-) -> None:
+) -> RealIncident:
     aggregate = aggregate_predictions(new_predictions, incident_type)
     existing_sequence_ids = csv_to_set(incident.related_sequence_ids)
     new_sequence_ids = csv_to_set(aggregate["related_sequence_ids"])
@@ -349,6 +355,8 @@ def update_incident(
     )
     incident.recommendation = RECOMMENDATION_BY_TYPE[incident.incident_type]
     incident.updated_at = datetime.utcnow()
+
+    return incident
 
 
 def group_key(prediction: IngestedSequencePrediction) -> Tuple[str, str, str, str]:
@@ -403,7 +411,11 @@ def generate_real_incidents(
         "incidents_updated": 0,
         "skipped_non_anomalies": 0,
         "skipped_duplicates": 0,
+        "notification_events_created": 0,
+        "notifications_queued": 0,
+        "notification_queue_failures": 0,
     }
+    notification_event_ids = []
 
     with get_db_session() as session:
         query = session.query(IngestedSequencePrediction)
@@ -462,7 +474,7 @@ def generate_real_incidents(
 
             if not matching_incidents:
                 aggregate = aggregate_predictions(predictions, incident_type)
-                create_incident(
+                incident = create_incident(
                     session=session,
                     hash_value=incident_hash(
                         entity_type=grouped_entity_type,
@@ -472,6 +484,16 @@ def generate_real_incidents(
                     ),
                     aggregate=aggregate,
                 )
+                event_id = create_incident_notification_if_enabled(
+                    db=session,
+                    incident=incident,
+                    event_type="incident.created",
+                )
+
+                if event_id:
+                    notification_event_ids.append(event_id)
+                    stats["notification_events_created"] += 1
+
                 stats["incidents_created"] += 1
                 continue
 
@@ -486,13 +508,27 @@ def generate_real_incidents(
                 continue
 
             if active_incident is not None:
-                update_incident(active_incident, new_predictions, incident_type)
+                updated_incident = update_incident(
+                    active_incident,
+                    new_predictions,
+                    incident_type,
+                )
+                event_id = create_incident_notification_if_enabled(
+                    db=session,
+                    incident=updated_incident,
+                    event_type="incident.updated",
+                )
+
+                if event_id:
+                    notification_event_ids.append(event_id)
+                    stats["notification_events_created"] += 1
+
                 stats["incidents_updated"] += 1
                 continue
 
             occurrence_key = values_to_csv(str(prediction.id) for prediction in new_predictions)
             aggregate = aggregate_predictions(new_predictions, incident_type)
-            create_incident(
+            incident = create_incident(
                 session=session,
                 hash_value=incident_hash(
                     entity_type=grouped_entity_type,
@@ -503,7 +539,21 @@ def generate_real_incidents(
                 ),
                 aggregate=aggregate,
             )
+            event_id = create_incident_notification_if_enabled(
+                db=session,
+                incident=incident,
+                event_type="incident.created",
+            )
+
+            if event_id:
+                notification_event_ids.append(event_id)
+                stats["notification_events_created"] += 1
+
             stats["incidents_created"] += 1
+
+    queue_result = enqueue_created_notification_events(notification_event_ids)
+    stats["notifications_queued"] = queue_result["queued"]
+    stats["notification_queue_failures"] = queue_result["failed"]
 
     return stats
 

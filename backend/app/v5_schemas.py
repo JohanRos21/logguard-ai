@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -19,3 +19,18 @@ class V5IncidentActionRequest(BaseModel):
 class V5ResolveIncidentRequest(BaseModel):
     actor: Optional[str] = Field(default=None, max_length=100)
     resolution_note: Optional[str] = None
+
+
+class V5TestWebhookRequest(BaseModel):
+    message: str = Field(default="LogGuard webhook test", max_length=500)
+
+
+class V5NotificationListResponse(BaseModel):
+    version: str
+    limit: int
+    data: List[Dict[str, Any]]
+
+
+class V5NotificationSummaryResponse(BaseModel):
+    version: str
+    data: Dict[str, Any]

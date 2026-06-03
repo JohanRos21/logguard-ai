@@ -291,3 +291,26 @@ class RealIncident(Base):
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class NotificationEvent(Base):
+    __tablename__ = "notification_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    event_id = Column(String(50), unique=True, index=True)
+    channel = Column(String(50), index=True, default="webhook", server_default="webhook")
+    event_type = Column(String(100), index=True)
+
+    incident_id = Column(String(80), nullable=True, index=True)
+    severity = Column(String(50), nullable=True, index=True)
+    status = Column(String(50), index=True, default="pending", server_default="pending")
+    target = Column(Text, nullable=True)
+
+    payload = Column(JSON, nullable=True)
+    response_status_code = Column(Integer, nullable=True)
+    response_body = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, server_default=func.now(), index=True)
+    sent_at = Column(DateTime, nullable=True)

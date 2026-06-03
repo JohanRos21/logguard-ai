@@ -1,8 +1,20 @@
+import json
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from backend.app.database import get_db_session
 from backend.app.celery_app import app
+from backend.app.services.notification_service import (
+    get_notification_event,
+    mark_notification_failed,
+    mark_notification_sent,
+    mark_notification_skipped,
+    webhook_is_configured,
+    webhook_timeout_seconds,
+    webhook_url,
+)
 from backend.app.services.real_incident_service import generate_real_incidents
 from backend.app.services.realtime_sequence_service import analyze_recent_entity_sequences
 
@@ -14,6 +26,168 @@ def ping_worker(message: str = "ping"):
         "message": message,
         "worker_time": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def truncate_text(value: Optional[str], limit: int = 1000) -> Optional[str]:
+    if value is None:
+        return None
+
+    return str(value)[:limit]
+
+
+def post_webhook_with_urllib(
+    target: str,
+    payload: Dict[str, Any],
+    timeout: float,
+) -> Dict[str, Any]:
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        target,
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "LogGuard-AI",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8", errors="replace")
+
+            return {
+                "status_code": response.status,
+                "body": truncate_text(body),
+            }
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8", errors="replace")
+
+        return {
+            "status_code": error.code,
+            "body": truncate_text(body),
+        }
+
+
+def post_webhook_json(
+    target: str,
+    payload: Dict[str, Any],
+    timeout: float,
+) -> Dict[str, Any]:
+    try:
+        import requests
+
+        response = requests.post(target, json=payload, timeout=timeout)
+
+        return {
+            "status_code": response.status_code,
+            "body": truncate_text(response.text),
+        }
+    except ModuleNotFoundError:
+        return post_webhook_with_urllib(
+            target=target,
+            payload=payload,
+            timeout=timeout,
+        )
+
+
+@app.task(name="logguard.send_webhook_notification")
+def send_webhook_notification(notification_event_id: str):
+    try:
+        with get_db_session() as session:
+            event = get_notification_event(session, notification_event_id)
+
+            if event is None:
+                return {
+                    "status": "not_found",
+                    "notification_event_id": notification_event_id,
+                }
+
+            if event.status == "sent":
+                return {
+                    "status": "already_sent",
+                    "event_id": event.event_id,
+                }
+
+            if event.status == "skipped":
+                return {
+                    "status": "already_skipped",
+                    "event_id": event.event_id,
+                }
+
+            event_id = event.event_id
+            target = event.target or webhook_url()
+            payload = event.payload or {}
+
+            if not webhook_is_configured() or not target:
+                notification = mark_notification_skipped(
+                    db=session,
+                    notification_id=event_id,
+                    reason="Webhook notifications are not configured.",
+                )
+
+                return {
+                    "status": "skipped",
+                    "event_id": event_id,
+                    "notification_event": notification,
+                }
+
+        result = post_webhook_json(
+            target=target,
+            payload=payload,
+            timeout=webhook_timeout_seconds(),
+        )
+        status_code = int(result["status_code"])
+        response_body = result.get("body")
+
+        with get_db_session() as session:
+            if 200 <= status_code < 300:
+                notification = mark_notification_sent(
+                    db=session,
+                    notification_id=event_id,
+                    response_status_code=status_code,
+                    response_body=response_body,
+                )
+
+                return {
+                    "status": "sent",
+                    "event_id": event_id,
+                    "response_status_code": status_code,
+                    "notification_event": notification,
+                }
+
+            notification = mark_notification_failed(
+                db=session,
+                notification_id=event_id,
+                error_message=f"Webhook returned HTTP {status_code}.",
+                response_status_code=status_code,
+                response_body=response_body,
+            )
+
+            return {
+                "status": "failed",
+                "event_id": event_id,
+                "response_status_code": status_code,
+                "notification_event": notification,
+            }
+    except Exception as error:
+        error_message = str(error)[:500]
+
+        try:
+            with get_db_session() as session:
+                notification = mark_notification_failed(
+                    db=session,
+                    notification_id=notification_event_id,
+                    error_message=error_message,
+                )
+        except Exception:
+            notification = None
+
+        return {
+            "status": "failed",
+            "notification_event_id": notification_event_id,
+            "error": error_message,
+            "notification_event": notification,
+        }
 
 
 def build_completed_result(

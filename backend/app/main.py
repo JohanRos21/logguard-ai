@@ -50,6 +50,11 @@ from backend.app.services.incident_lifecycle_service import (
     reopen_incident,
     resolve_incident,
 )
+from backend.app.services.notification_service import (
+    get_notifications_summary,
+    list_notification_events,
+    queue_test_webhook_notification,
+)
 
 from backend.app.v4_schemas import (
     V4AdaptiveBatchRequest,
@@ -59,7 +64,10 @@ from backend.app.v4_schemas import (
 from backend.app.v5_schemas import (
     V5AnalyzeEntityAsyncRequest,
     V5IncidentActionRequest,
+    V5NotificationListResponse,
+    V5NotificationSummaryResponse,
     V5ResolveIncidentRequest,
+    V5TestWebhookRequest,
 )
 from backend.app.services.log_normalizer_service import (
     get_available_adapters,
@@ -1050,6 +1058,51 @@ def v5_reopen_incident(
         }
     except Exception as error:
         lifecycle_error_response(error)
+
+
+@app.get("/v5/notifications", response_model=V5NotificationListResponse)
+def v5_notifications(
+    status: Optional[str] = None,
+    channel: Optional[str] = None,
+    event_type: Optional[str] = None,
+    incident_id: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=500),
+    _authorized: bool = Depends(validate_ingestion_api_key),
+):
+    return {
+        "version": "v5",
+        "limit": limit,
+        "data": list_notification_events(
+            status=status,
+            channel=channel,
+            event_type=event_type,
+            incident_id=incident_id,
+            limit=limit,
+        ),
+    }
+
+
+@app.get("/v5/notifications/summary", response_model=V5NotificationSummaryResponse)
+def v5_notifications_summary(
+    _authorized: bool = Depends(validate_ingestion_api_key),
+):
+    return {
+        "version": "v5",
+        "data": get_notifications_summary(),
+    }
+
+
+@app.post("/v5/notifications/test-webhook")
+def v5_test_webhook_notification(
+    request: V5TestWebhookRequest,
+    _authorized: bool = Depends(validate_ingestion_api_key),
+):
+    result = queue_test_webhook_notification(request.message)
+
+    return {
+        "version": "v5",
+        **result,
+    }
 
 
 @app.get("/v5/tasks/{task_id}")

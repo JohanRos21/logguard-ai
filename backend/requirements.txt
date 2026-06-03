@@ -7,3 +7,6 @@ joblib
 pydantic
 python-multipart
 torch
+sqlalchemy
+psycopg2-binary
+python-dotenv

@@ -3,11 +3,37 @@ import json
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from backend.app.ingestion_schemas import (
+    IngestBatchRequest,
+    IngestLogRequest,
+    IngestLogResponse,
+)
 from backend.app.ml.predict_anomaly import predict_anomaly
 from backend.app.ml.predict_sequence_transformer import predict_sequence
+
+from backend.app.services.database_query_service import (
+    get_v3_chart_data,
+    get_v3_incidents,
+    get_v3_logs,
+    get_v3_model_metrics,
+    get_v3_predictions,
+    get_v3_sequences,
+    get_v3_summary,
+)
+from backend.app.services.ingestion_service import (
+    get_ingested_logs,
+    get_ingested_logs_summary,
+    ingest_batch,
+    ingest_log,
+)
+from backend.app.services.realtime_sequence_service import (
+    analyze_ingested_sequences,
+    get_ingested_sequence_predictions,
+    get_real_monitoring_summary,
+)
 
 
 RULE_ALERTS_PATH = "reports/rule_alerts.csv"
@@ -30,6 +56,22 @@ app = FastAPI(
     ),
     version="2.0.0"
 )
+
+
+def validate_ingestion_api_key(
+    authorization: Optional[str] = Header(default=None),
+):
+    expected_api_key = os.getenv("LOGGUARD_API_KEY", "change-me")
+
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing authorization header.")
+
+    scheme, _, token = authorization.partition(" ")
+
+    if scheme.lower() != "bearer" or token != expected_api_key:
+        raise HTTPException(status_code=401, detail="Invalid API key.")
+
+    return True
 
 
 class LogFeaturesInput(BaseModel):
@@ -395,3 +437,214 @@ def analyze_sequence(payload: SequenceInput):
             status_code=400,
             detail=str(error)
         )
+
+
+@app.get("/v3/summary")
+def v3_summary():
+    return get_v3_summary()
+
+
+@app.get("/v3/logs")
+def v3_logs(
+    limit: int = Query(default=50, ge=1, le=500),
+    severity: Optional[str] = None,
+    route: Optional[str] = None,
+    event_type: Optional[str] = None,
+):
+    return {
+        "version": "v3",
+        "storage": "PostgreSQL",
+        "limit": limit,
+        "data": get_v3_logs(
+            limit=limit,
+            severity=severity,
+            route=route,
+            event_type=event_type,
+        )
+    }
+
+
+@app.get("/v3/sequences")
+def v3_sequences(
+    limit: int = Query(default=50, ge=1, le=500),
+    label: Optional[str] = None,
+    entity_id: Optional[str] = None,
+):
+    return {
+        "version": "v3",
+        "storage": "PostgreSQL",
+        "limit": limit,
+        "data": get_v3_sequences(
+            limit=limit,
+            label=label,
+            entity_id=entity_id,
+        )
+    }
+
+
+@app.get("/v3/predictions")
+def v3_predictions(
+    limit: int = Query(default=50, ge=1, le=500),
+    label: Optional[str] = None,
+    predicted_label: Optional[str] = None,
+    only_errors: bool = False,
+):
+    return {
+        "version": "v3",
+        "storage": "PostgreSQL",
+        "limit": limit,
+        "data": get_v3_predictions(
+            limit=limit,
+            label=label,
+            predicted_label=predicted_label,
+            only_errors=only_errors,
+        )
+    }
+
+
+@app.get("/v3/incidents")
+def v3_incidents(
+    limit: int = Query(default=50, ge=1, le=500),
+    severity: Optional[str] = None,
+    route: Optional[str] = None,
+):
+    return {
+        "version": "v3",
+        "storage": "PostgreSQL",
+        "limit": limit,
+        "data": get_v3_incidents(
+            limit=limit,
+            severity=severity,
+            route=route,
+        )
+    }
+
+
+@app.get("/v3/model-metrics")
+def v3_model_metrics():
+    return {
+        "version": "v3",
+        "storage": "PostgreSQL",
+        "data": get_v3_model_metrics()
+    }
+
+
+@app.get("/v3/charts")
+def v3_charts():
+    return {
+        "version": "v3",
+        "storage": "PostgreSQL",
+        "data": get_v3_chart_data()
+    }
+
+
+@app.post("/v3/ingest-log", response_model=IngestLogResponse)
+def v3_ingest_log(
+    payload: IngestLogRequest,
+    _authorized: bool = Depends(validate_ingestion_api_key),
+):
+    try:
+        result = ingest_log(payload)
+
+        return {
+            "status": "accepted",
+            "id": result["id"],
+            "source_severity": result["source_severity"],
+            "final_severity": result["final_severity"],
+        }
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+@app.post("/v3/ingest-batch")
+def v3_ingest_batch(
+    payload: IngestBatchRequest,
+    _authorized: bool = Depends(validate_ingestion_api_key),
+):
+    try:
+        results = ingest_batch(payload)
+
+        return {
+            "status": "accepted",
+            "total_received": len(payload.logs),
+            "total_saved": len(results),
+            "saved_ids": [result["id"] for result in results],
+        }
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+@app.get("/v3/ingested-logs")
+def v3_ingested_logs(
+    source: Optional[str] = None,
+    event_type: Optional[str] = None,
+    final_severity: Optional[str] = None,
+    ip: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    return {
+        "version": "v3",
+        "storage": "PostgreSQL",
+        "limit": limit,
+        "data": get_ingested_logs(
+            limit=limit,
+            source=source,
+            event_type=event_type,
+            final_severity=final_severity,
+            ip=ip,
+        ),
+    }
+
+
+@app.get("/v3/ingested-logs/summary")
+def v3_ingested_logs_summary():
+    return {
+        "version": "v3",
+        "storage": "PostgreSQL",
+        "data": get_ingested_logs_summary(),
+    }
+
+
+@app.post("/v3/analyze-ingested-sequences")
+def v3_analyze_ingested_sequences(
+    group_by: str = Query(default="ip"),
+    window_size: int = Query(default=20, ge=1),
+    limit_entities: Optional[int] = Query(default=None, ge=1),
+    source: Optional[str] = None,
+):
+    try:
+        return analyze_ingested_sequences(
+            group_by=group_by,
+            window_size=window_size,
+            limit_entities=limit_entities,
+            source=source,
+        )
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+@app.get("/v3/ingested-sequence-predictions")
+def v3_ingested_sequence_predictions(
+    entity_id: Optional[str] = None,
+    ai_prediction: Optional[str] = None,
+    final_severity: Optional[str] = None,
+    source: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    return {
+        "version": "v3",
+        "storage": "PostgreSQL",
+        "limit": limit,
+        "data": get_ingested_sequence_predictions(
+            limit=limit,
+            entity_id=entity_id,
+            ai_prediction=ai_prediction,
+            final_severity=final_severity,
+            source=source,
+        ),
+    }
+
+
+@app.get("/v3/real-monitoring-summary")
+def v3_real_monitoring_summary():
+    return get_real_monitoring_summary()

@@ -41,13 +41,26 @@ from backend.app.services.real_incident_service import (
     get_real_incidents_summary,
 )
 from backend.app.services.async_analysis_service import enqueue_ingested_entity_analysis
+from backend.app.services.incident_lifecycle_service import (
+    IncidentNotFoundError,
+    InvalidIncidentTransitionError,
+    acknowledge_incident,
+    get_incident_lifecycle_summary,
+    list_incidents_by_status,
+    reopen_incident,
+    resolve_incident,
+)
 
 from backend.app.v4_schemas import (
     V4AdaptiveBatchRequest,
     V4AdaptiveLogRequest,
     V4NormalizationPreviewRequest,
 )
-from backend.app.v5_schemas import V5AnalyzeEntityAsyncRequest
+from backend.app.v5_schemas import (
+    V5AnalyzeEntityAsyncRequest,
+    V5IncidentActionRequest,
+    V5ResolveIncidentRequest,
+)
 from backend.app.services.log_normalizer_service import (
     get_available_adapters,
     normalize_external_log,
@@ -923,6 +936,120 @@ def v5_analyze_entity_async(
         "entity_type": queue_result["entity_type"],
         "entity_id": queue_result["entity_id"],
     }
+
+
+def lifecycle_error_response(error: Exception):
+    if isinstance(error, IncidentNotFoundError):
+        raise HTTPException(status_code=404, detail=str(error))
+
+    if isinstance(error, InvalidIncidentTransitionError):
+        raise HTTPException(status_code=400, detail=str(error))
+
+    raise error
+
+
+@app.get("/v5/incidents")
+def v5_incidents(
+    status: Optional[str] = None,
+    severity: Optional[str] = None,
+    incident_type: Optional[str] = None,
+    entity_id: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=500),
+    _authorized: bool = Depends(validate_ingestion_api_key),
+):
+    try:
+        return {
+            "version": "v5",
+            "limit": limit,
+            "data": list_incidents_by_status(
+                status=status,
+                severity=severity,
+                incident_type=incident_type,
+                entity_id=entity_id,
+                limit=limit,
+            ),
+        }
+    except Exception as error:
+        lifecycle_error_response(error)
+
+
+@app.get("/v5/incidents/summary")
+def v5_incidents_summary(
+    _authorized: bool = Depends(validate_ingestion_api_key),
+):
+    return {
+        "version": "v5",
+        "data": get_incident_lifecycle_summary(),
+    }
+
+
+@app.patch("/v5/incidents/{incident_id}/acknowledge")
+def v5_acknowledge_incident(
+    incident_id: str,
+    request: V5IncidentActionRequest,
+    _authorized: bool = Depends(validate_ingestion_api_key),
+):
+    try:
+        incident = acknowledge_incident(
+            incident_id=incident_id,
+            acknowledged_by=request.actor,
+            note=request.note,
+        )
+
+        return {
+            "version": "v5",
+            "status": "acknowledged",
+            "incident_id": incident_id,
+            "incident": incident,
+        }
+    except Exception as error:
+        lifecycle_error_response(error)
+
+
+@app.patch("/v5/incidents/{incident_id}/resolve")
+def v5_resolve_incident(
+    incident_id: str,
+    request: V5ResolveIncidentRequest,
+    _authorized: bool = Depends(validate_ingestion_api_key),
+):
+    try:
+        incident = resolve_incident(
+            incident_id=incident_id,
+            resolved_by=request.actor,
+            resolution_note=request.resolution_note,
+        )
+
+        return {
+            "version": "v5",
+            "status": "resolved",
+            "incident_id": incident_id,
+            "incident": incident,
+        }
+    except Exception as error:
+        lifecycle_error_response(error)
+
+
+@app.patch("/v5/incidents/{incident_id}/reopen")
+def v5_reopen_incident(
+    incident_id: str,
+    request: V5IncidentActionRequest,
+    _authorized: bool = Depends(validate_ingestion_api_key),
+):
+    try:
+        incident = reopen_incident(
+            incident_id=incident_id,
+            reopened_by=request.actor,
+            note=request.note,
+        )
+
+        return {
+            "version": "v5",
+            "status": "open",
+            "incident_id": incident_id,
+            "incident": incident,
+        }
+    except Exception as error:
+        lifecycle_error_response(error)
 
 
 @app.get("/v5/tasks/{task_id}")

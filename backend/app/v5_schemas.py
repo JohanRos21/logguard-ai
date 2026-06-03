@@ -9,3 +9,13 @@ class V5AnalyzeEntityAsyncRequest(BaseModel):
     window_size: int = Field(default=20, ge=1)
     source: Optional[str] = None
     group_by: str = Field(default="ip")
+
+
+class V5IncidentActionRequest(BaseModel):
+    actor: Optional[str] = Field(default=None, max_length=100)
+    note: Optional[str] = None
+
+
+class V5ResolveIncidentRequest(BaseModel):
+    actor: Optional[str] = Field(default=None, max_length=100)
+    resolution_note: Optional[str] = None

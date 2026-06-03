@@ -263,7 +263,7 @@ class RealIncident(Base):
     title = Column(String(255))
     incident_type = Column(String(100), index=True)
     severity = Column(String(50), index=True)
-    status = Column(String(50), index=True)
+    status = Column(String(50), index=True, default="open", server_default="open")
 
     entity_type = Column(String(50), index=True)
     entity_id = Column(String(100), index=True)
@@ -281,6 +281,13 @@ class RealIncident(Base):
 
     reason = Column(Text)
     recommendation = Column(Text)
+    resolution_note = Column(Text, nullable=True)
+
+    acknowledged_at = Column(DateTime, nullable=True)
+    acknowledged_by = Column(String(100), nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    resolved_by = Column(String(100), nullable=True)
+    assignee = Column(String(100), nullable=True)
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

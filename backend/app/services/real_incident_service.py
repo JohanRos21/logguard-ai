@@ -193,13 +193,19 @@ def incident_hash(
     entity_id: str,
     incident_type: str,
     source: Optional[str],
+    occurrence_key: Optional[str] = None,
 ) -> str:
-    raw_value = "|".join([
+    parts = [
         entity_type,
         entity_id,
         incident_type,
         source or "unknown",
-    ])
+    ]
+
+    if occurrence_key:
+        parts.append(occurrence_key)
+
+    raw_value = "|".join(parts)
 
     return hashlib.sha256(raw_value.encode("utf-8")).hexdigest()
 
@@ -356,6 +362,34 @@ def group_key(prediction: IngestedSequencePrediction) -> Tuple[str, str, str, st
     )
 
 
+def matching_incidents_query(
+    session: Session,
+    entity_type: str,
+    entity_id: str,
+    incident_type: str,
+    source: str,
+):
+    query = session.query(RealIncident).filter(
+        RealIncident.entity_type == entity_type,
+        RealIncident.entity_id == entity_id,
+        RealIncident.incident_type == incident_type,
+    )
+
+    if source == "unknown":
+        return query.filter(RealIncident.source.is_(None))
+
+    return query.filter(RealIncident.source == source)
+
+
+def incident_sequence_ids(incidents: List[RealIncident]) -> set:
+    known_sequence_ids = set()
+
+    for incident in incidents:
+        known_sequence_ids.update(csv_to_set(incident.related_sequence_ids))
+
+    return known_sequence_ids
+
+
 def generate_real_incidents(
     entity_type: Optional[str] = None,
     entity_id: Optional[str] = None,
@@ -404,37 +438,72 @@ def generate_real_incidents(
 
         for key, predictions in grouped_predictions.items():
             grouped_entity_type, grouped_entity_id, incident_type, grouped_source = key
-            hash_value = incident_hash(
-                entity_type=grouped_entity_type,
-                entity_id=grouped_entity_id,
-                incident_type=incident_type,
-                source=grouped_source,
-            )
-            existing_incident = (
-                session.query(RealIncident)
-                .filter(RealIncident.incident_hash == hash_value)
-                .first()
-            )
 
-            if existing_incident is None:
+            matching_incidents = (
+                matching_incidents_query(
+                    session=session,
+                    entity_type=grouped_entity_type,
+                    entity_id=grouped_entity_id,
+                    incident_type=incident_type,
+                    source=grouped_source,
+                )
+                .order_by(desc(RealIncident.created_at))
+                .all()
+            )
+            active_incident = next(
+                (
+                    incident
+                    for incident in matching_incidents
+                    if incident.status in {"open", "acknowledged"}
+                ),
+                None,
+            )
+            known_sequence_ids = incident_sequence_ids(matching_incidents)
+
+            if not matching_incidents:
                 aggregate = aggregate_predictions(predictions, incident_type)
-                create_incident(session, hash_value, aggregate)
+                create_incident(
+                    session=session,
+                    hash_value=incident_hash(
+                        entity_type=grouped_entity_type,
+                        entity_id=grouped_entity_id,
+                        incident_type=incident_type,
+                        source=grouped_source,
+                    ),
+                    aggregate=aggregate,
+                )
                 stats["incidents_created"] += 1
                 continue
 
-            existing_sequence_ids = csv_to_set(existing_incident.related_sequence_ids)
             new_predictions = [
                 prediction
                 for prediction in predictions
-                if str(prediction.id) not in existing_sequence_ids
+                if str(prediction.id) not in known_sequence_ids
             ]
 
             if not new_predictions:
                 stats["skipped_duplicates"] += len(predictions)
                 continue
 
-            update_incident(existing_incident, new_predictions, incident_type)
-            stats["incidents_updated"] += 1
+            if active_incident is not None:
+                update_incident(active_incident, new_predictions, incident_type)
+                stats["incidents_updated"] += 1
+                continue
+
+            occurrence_key = values_to_csv(str(prediction.id) for prediction in new_predictions)
+            aggregate = aggregate_predictions(new_predictions, incident_type)
+            create_incident(
+                session=session,
+                hash_value=incident_hash(
+                    entity_type=grouped_entity_type,
+                    entity_id=grouped_entity_id,
+                    incident_type=incident_type,
+                    source=grouped_source,
+                    occurrence_key=occurrence_key,
+                ),
+                aggregate=aggregate,
+            )
+            stats["incidents_created"] += 1
 
     return stats
 

@@ -3,7 +3,8 @@ import json
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Security
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 from backend.app.ingestion_schemas import (
@@ -72,18 +73,22 @@ app = FastAPI(
     version="2.0.0"
 )
 
+bearer_auth = HTTPBearer(
+    auto_error=False,
+    scheme_name="LogGuard API Key",
+    description="Use LOGGUARD_API_KEY as a Bearer token.",
+)
+
 
 def validate_ingestion_api_key(
-    authorization: Optional[str] = Header(default=None),
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(bearer_auth),
 ):
     expected_api_key = os.getenv("LOGGUARD_API_KEY", "change-me")
 
-    if not authorization:
+    if not credentials:
         raise HTTPException(status_code=401, detail="Missing authorization header.")
 
-    scheme, _, token = authorization.partition(" ")
-
-    if scheme.lower() != "bearer" or token != expected_api_key:
+    if credentials.scheme.lower() != "bearer" or credentials.credentials != expected_api_key:
         raise HTTPException(status_code=401, detail="Invalid API key.")
 
     return True

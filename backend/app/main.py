@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Query, Security
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
@@ -99,6 +100,24 @@ app = FastAPI(
         "Transformer secuencial."
     ),
     version="2.0.0"
+)
+
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "LOGGUARD_CORS_ORIGINS",
+        "http://127.0.0.1:3000,http://localhost:3000,"
+        "http://127.0.0.1:3001,http://localhost:3001",
+    ).split(",")
+    if origin.strip()
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 bearer_auth = HTTPBearer(

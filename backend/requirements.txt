@@ -13,3 +13,4 @@ python-dotenv
 celery
 redis
 requests
+psycopg[binary]

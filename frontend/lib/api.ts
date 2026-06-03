@@ -16,12 +16,12 @@ export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8001";
 
 const PROXY_BASE_URL = "/api/backend";
+const API_MODE = process.env.NEXT_PUBLIC_API_MODE;
+const USE_PROXY =
+  API_MODE === "proxy" || process.env.NEXT_PUBLIC_DIRECT_API === "false";
 
 function getBaseUrl() {
-  if (
-    typeof window !== "undefined" &&
-    process.env.NEXT_PUBLIC_DIRECT_API !== "true"
-  ) {
+  if (typeof window !== "undefined" && USE_PROXY) {
     return PROXY_BASE_URL;
   }
 

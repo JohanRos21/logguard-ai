@@ -77,6 +77,7 @@ def build_incident_notification_payload(incident, event_type: str) -> Dict[str, 
         "source": "logguard-ai",
         "event_type": event_type,
         "incident": {
+            "project_id": incident_value(incident, "project_id"),
             "incident_id": incident_value(incident, "incident_id"),
             "title": incident_value(incident, "title"),
             "incident_type": incident_value(incident, "incident_type"),
@@ -164,6 +165,7 @@ def create_notification_event(
 ) -> NotificationEvent:
     target = webhook_url() if channel == WEBHOOK_CHANNEL else None
     event = NotificationEvent(
+        project_id=incident_value(incident, "project_id"),
         event_id=new_notification_event_id(db),
         channel=channel,
         event_type=event_type,
@@ -210,10 +212,12 @@ def create_custom_notification_event(
     status: str = "pending",
     target: Optional[str] = None,
     incident_id: Optional[str] = None,
+    project_id: Optional[str] = None,
     severity: Optional[str] = None,
     error_message: Optional[str] = None,
 ) -> NotificationEvent:
     event = NotificationEvent(
+        project_id=project_id,
         event_id=new_notification_event_id(db),
         channel=channel,
         event_type=event_type,
@@ -385,7 +389,10 @@ def enqueue_incident_notification(incident_id: str, event_type: str) -> Dict[str
     }
 
 
-def queue_test_webhook_notification(message: str) -> Dict[str, Any]:
+def queue_test_webhook_notification(
+    message: str,
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
     configured = webhook_is_configured()
     target = webhook_url() if configured else None
     status = "pending" if configured else "skipped"
@@ -398,6 +405,7 @@ def queue_test_webhook_notification(message: str) -> Dict[str, Any]:
             payload=build_test_notification_payload(message),
             status=status,
             target=target,
+            project_id=project_id,
             error_message=reason,
         )
         event_id = event.event_id
@@ -425,6 +433,7 @@ def list_notification_events(
     channel: Optional[str] = None,
     event_type: Optional[str] = None,
     incident_id: Optional[str] = None,
+    project_id: Optional[str] = None,
     limit: int = 50,
 ) -> list[Dict[str, Any]]:
     with get_db_session() as session:
@@ -441,6 +450,9 @@ def list_notification_events(
 
         if incident_id:
             query = query.filter(NotificationEvent.incident_id == incident_id)
+
+        if project_id:
+            query = query.filter(NotificationEvent.project_id == project_id)
 
         rows = (
             query

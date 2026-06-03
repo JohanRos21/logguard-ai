@@ -177,6 +177,7 @@ def list_incidents_by_status(
     severity: Optional[str] = None,
     incident_type: Optional[str] = None,
     entity_id: Optional[str] = None,
+    project_id: Optional[str] = None,
     limit: int = 50,
 ) -> list[Dict[str, Any]]:
     with get_db_session() as session:
@@ -197,6 +198,9 @@ def list_incidents_by_status(
 
         if entity_id:
             query = query.filter(RealIncident.entity_id == entity_id)
+
+        if project_id:
+            query = query.filter(RealIncident.project_id == project_id)
 
         rows = (
             query

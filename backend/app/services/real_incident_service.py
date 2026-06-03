@@ -12,6 +12,7 @@ from backend.app.services.notification_service import (
     create_incident_notification_if_enabled,
     enqueue_created_notification_events,
 )
+from backend.app.services.usage_service import increment_usage
 
 
 ADMIN_ROUTES = {
@@ -198,8 +199,10 @@ def incident_hash(
     incident_type: str,
     source: Optional[str],
     occurrence_key: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> str:
     parts = [
+        project_id or "global",
         entity_type,
         entity_id,
         incident_type,
@@ -272,6 +275,7 @@ def aggregate_predictions(
     entity_id = str(first_prediction.entity_id)
 
     return {
+        "project_id": first_prediction.project_id,
         "title": TITLE_BY_TYPE[incident_type].format(entity_id=entity_id),
         "incident_type": incident_type,
         "severity": highest_severity(severities),
@@ -359,10 +363,11 @@ def update_incident(
     return incident
 
 
-def group_key(prediction: IngestedSequencePrediction) -> Tuple[str, str, str, str]:
+def group_key(prediction: IngestedSequencePrediction) -> Tuple[Optional[str], str, str, str, str]:
     incident_type = classify_incident_type(prediction)
 
     return (
+        prediction.project_id,
         prediction.entity_type,
         str(prediction.entity_id),
         incident_type,
@@ -372,6 +377,7 @@ def group_key(prediction: IngestedSequencePrediction) -> Tuple[str, str, str, st
 
 def matching_incidents_query(
     session: Session,
+    project_id: Optional[str],
     entity_type: str,
     entity_id: str,
     incident_type: str,
@@ -382,6 +388,11 @@ def matching_incidents_query(
         RealIncident.entity_id == entity_id,
         RealIncident.incident_type == incident_type,
     )
+
+    if project_id:
+        query = query.filter(RealIncident.project_id == project_id)
+    else:
+        query = query.filter(RealIncident.project_id.is_(None))
 
     if source == "unknown":
         return query.filter(RealIncident.source.is_(None))
@@ -404,6 +415,7 @@ def generate_real_incidents(
     entity_ids: Optional[List[str]] = None,
     source: Optional[str] = None,
     limit: Optional[int] = None,
+    project_id: Optional[str] = None,
 ) -> Dict[str, int]:
     stats = {
         "predictions_checked": 0,
@@ -432,6 +444,9 @@ def generate_real_incidents(
         if source:
             query = query.filter(IngestedSequencePrediction.source == source)
 
+        if project_id:
+            query = query.filter(IngestedSequencePrediction.project_id == project_id)
+
         query = query.order_by(IngestedSequencePrediction.start_time.asc(), IngestedSequencePrediction.id.asc())
 
         if limit:
@@ -449,11 +464,18 @@ def generate_real_incidents(
             grouped_predictions[group_key(prediction)].append(prediction)
 
         for key, predictions in grouped_predictions.items():
-            grouped_entity_type, grouped_entity_id, incident_type, grouped_source = key
+            (
+                grouped_project_id,
+                grouped_entity_type,
+                grouped_entity_id,
+                incident_type,
+                grouped_source,
+            ) = key
 
             matching_incidents = (
                 matching_incidents_query(
                     session=session,
+                    project_id=grouped_project_id,
                     entity_type=grouped_entity_type,
                     entity_id=grouped_entity_id,
                     incident_type=incident_type,
@@ -481,9 +503,18 @@ def generate_real_incidents(
                         entity_id=grouped_entity_id,
                         incident_type=incident_type,
                         source=grouped_source,
+                        project_id=grouped_project_id,
                     ),
                     aggregate=aggregate,
                 )
+                if grouped_project_id:
+                    increment_usage(
+                        db=session,
+                        project_id=grouped_project_id,
+                        metric="incidents_created",
+                        quantity=1,
+                        metadata={"incident_id": incident.incident_id},
+                    )
                 event_id = create_incident_notification_if_enabled(
                     db=session,
                     incident=incident,
@@ -536,9 +567,18 @@ def generate_real_incidents(
                     incident_type=incident_type,
                     source=grouped_source,
                     occurrence_key=occurrence_key,
+                    project_id=grouped_project_id,
                 ),
                 aggregate=aggregate,
             )
+            if grouped_project_id:
+                increment_usage(
+                    db=session,
+                    project_id=grouped_project_id,
+                    metric="incidents_created",
+                    quantity=1,
+                    metadata={"incident_id": incident.incident_id},
+                )
             event_id = create_incident_notification_if_enabled(
                 db=session,
                 incident=incident,
@@ -562,12 +602,14 @@ def safe_generate_real_incidents_for_entity(
     entity_type: str,
     entity_id: Optional[str],
     source: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     try:
         return generate_real_incidents(
             entity_type=entity_type,
             entity_id=str(entity_id) if entity_id else None,
             source=source,
+            project_id=project_id,
         )
     except Exception as error:
         return {
@@ -585,12 +627,14 @@ def safe_generate_real_incidents_for_entities(
     entity_type: str,
     entity_ids: List[str],
     source: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     try:
         return generate_real_incidents(
             entity_type=entity_type,
             entity_ids=sorted({str(entity_id) for entity_id in entity_ids if entity_id}),
             source=source,
+            project_id=project_id,
         )
     except Exception as error:
         return {

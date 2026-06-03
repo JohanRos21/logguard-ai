@@ -21,6 +21,14 @@ COMMANDS: list[tuple[str, list[str]]] = [
         "Apply notification events migration",
         [sys.executable, str(ROOT_DIR / "scripts" / "migrate_notification_events.py")],
     ),
+    (
+        "Apply V6 projects and API keys migration",
+        [sys.executable, str(ROOT_DIR / "scripts" / "migrate_v6_projects_api_keys.py")],
+    ),
+    (
+        "Apply V6 usage tracking migration",
+        [sys.executable, str(ROOT_DIR / "scripts" / "migrate_v6_usage_tracking.py")],
+    ),
 ]
 
 

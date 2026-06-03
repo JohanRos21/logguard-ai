@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from backend.app.database import get_db_session
 from backend.app.db_models import IngestedLog, IngestedSequencePrediction
 from backend.app.ml.predict_sequence_transformer import predict_sequence
+from backend.app.services.usage_service import increment_usage
 
 
 MODEL_WINDOW_SIZE = 20
@@ -85,6 +86,7 @@ def get_entity_rows(
     group_by: str,
     source: Optional[str],
     limit_entities: Optional[int],
+    project_id: Optional[str] = None,
 ):
     group_column = get_group_column(group_by)
 
@@ -99,6 +101,9 @@ def get_entity_rows(
 
     if source:
         query = query.filter(IngestedLog.source == source)
+
+    if project_id:
+        query = query.filter(IngestedLog.project_id == project_id)
 
     query = (
         query
@@ -117,6 +122,7 @@ def get_logs_for_entity(
     group_by: str,
     entity_id: str,
     source: Optional[str],
+    project_id: Optional[str] = None,
 ) -> List[IngestedLog]:
     group_column = get_group_column(group_by)
 
@@ -128,6 +134,9 @@ def get_logs_for_entity(
 
     if source:
         query = query.filter(IngestedLog.source == source)
+
+    if project_id:
+        query = query.filter(IngestedLog.project_id == project_id)
 
     return (
         query
@@ -176,6 +185,7 @@ def build_prediction_record(
     entity_id: str,
     logs: List[IngestedLog],
     hash_value: str,
+    project_id: Optional[str] = None,
 ) -> IngestedSequencePrediction:
     event_sequence = [log.event_type for log in logs]
     route_sequence = [log.route for log in logs]
@@ -190,6 +200,7 @@ def build_prediction_record(
     )
 
     return IngestedSequencePrediction(
+        project_id=project_id,
         sequence_hash=hash_value,
         entity_type=entity_type,
         entity_id=str(entity_id),
@@ -214,6 +225,7 @@ def analyze_recent_entity_sequences(
     entity_id: Optional[str] = None,
     window_size: int = MODEL_WINDOW_SIZE,
     source: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     group_by = validate_group_by(group_by)
     window_size = validate_window_size(window_size)
@@ -231,6 +243,7 @@ def analyze_recent_entity_sequences(
         group_by=group_by,
         entity_id=str(entity_id),
         source=source,
+        project_id=project_id,
     )
 
     if len(logs) < window_size:
@@ -255,9 +268,24 @@ def analyze_recent_entity_sequences(
         entity_id=str(entity_id),
         logs=window_logs,
         hash_value=hash_value,
+        project_id=project_id,
     )
 
     session.add(record)
+    session.flush()
+
+    if project_id:
+        increment_usage(
+            db=session,
+            project_id=project_id,
+            metric="predictions_created",
+            quantity=1,
+            metadata={
+                "entity_type": group_by,
+                "entity_id": str(entity_id),
+                "source": record.source,
+            },
+        )
 
     anomalies_detected = 1 if record.ai_prediction == "anomaly" else 0
 
@@ -275,6 +303,7 @@ def analyze_entities_after_ingestion(
     group_by: str = "ip",
     window_size: int = MODEL_WINDOW_SIZE,
     source: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> Dict[str, int]:
     group_by = validate_group_by(group_by)
     window_size = validate_window_size(window_size)
@@ -297,6 +326,7 @@ def analyze_entities_after_ingestion(
                 entity_id=entity_id,
                 window_size=window_size,
                 source=source,
+                project_id=project_id,
             )
 
             if result["status"] == "insufficient_logs":
@@ -318,6 +348,7 @@ def safe_analyze_recent_entity_after_ingestion(
     group_by: str = "ip",
     window_size: int = MODEL_WINDOW_SIZE,
     source: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     try:
         with get_db_session() as session:
@@ -327,6 +358,7 @@ def safe_analyze_recent_entity_after_ingestion(
                 entity_id=entity_id,
                 window_size=window_size,
                 source=source,
+                project_id=project_id,
             )
     except Exception as error:
         return {
@@ -342,6 +374,7 @@ def safe_analyze_entities_after_ingestion(
     group_by: str = "ip",
     window_size: int = MODEL_WINDOW_SIZE,
     source: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     try:
         return analyze_entities_after_ingestion(
@@ -349,6 +382,7 @@ def safe_analyze_entities_after_ingestion(
             group_by=group_by,
             window_size=window_size,
             source=source,
+            project_id=project_id,
         )
     except Exception as error:
         return {
@@ -367,6 +401,7 @@ def analyze_ingested_sequences(
     window_size: int = MODEL_WINDOW_SIZE,
     limit_entities: Optional[int] = None,
     source: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> Dict[str, int]:
     group_by = validate_group_by(group_by)
     window_size = validate_window_size(window_size)
@@ -383,6 +418,7 @@ def analyze_ingested_sequences(
             group_by=group_by,
             source=source,
             limit_entities=limit_entities,
+            project_id=project_id,
         )
 
         for entity_id, _total_logs in entity_rows:
@@ -392,6 +428,7 @@ def analyze_ingested_sequences(
                 group_by=group_by,
                 entity_id=entity_id,
                 source=source,
+                project_id=project_id,
             )
 
             if len(logs) < window_size:
@@ -411,9 +448,24 @@ def analyze_ingested_sequences(
                     entity_id=str(entity_id),
                     logs=window_logs,
                     hash_value=hash_value,
+                    project_id=project_id,
                 )
 
                 session.add(record)
+                session.flush()
+
+                if project_id:
+                    increment_usage(
+                        db=session,
+                        project_id=project_id,
+                        metric="predictions_created",
+                        quantity=1,
+                        metadata={
+                            "entity_type": group_by,
+                            "entity_id": str(entity_id),
+                            "source": record.source,
+                        },
+                    )
                 sequences_analyzed += 1
 
                 if record.ai_prediction == "anomaly":

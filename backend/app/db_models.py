@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, Float, Integer, String, Text, JSON
+from sqlalchemy import Column, Date, DateTime, Float, Integer, String, Text, JSON, UniqueConstraint
 from sqlalchemy.sql import func
 
 from backend.app.database import Base
@@ -202,6 +202,7 @@ class IngestedLog(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
+    project_id = Column(String(50), nullable=True, index=True)
     timestamp = Column(DateTime, index=True)
     source = Column(String(100), index=True)
     environment = Column(String(50), index=True)
@@ -230,6 +231,7 @@ class IngestedSequencePrediction(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
+    project_id = Column(String(50), nullable=True, index=True)
     sequence_hash = Column(String(64), unique=True, index=True)
     entity_type = Column(String(50), index=True)
     entity_id = Column(String(100), index=True)
@@ -257,6 +259,7 @@ class RealIncident(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
+    project_id = Column(String(50), nullable=True, index=True)
     incident_id = Column(String(80), unique=True, index=True)
     incident_hash = Column(String(64), unique=True, index=True)
 
@@ -298,6 +301,7 @@ class NotificationEvent(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
+    project_id = Column(String(50), nullable=True, index=True)
     event_id = Column(String(50), unique=True, index=True)
     channel = Column(String(50), index=True, default="webhook", server_default="webhook")
     event_type = Column(String(100), index=True)
@@ -314,3 +318,76 @@ class NotificationEvent(Base):
 
     created_at = Column(DateTime, server_default=func.now(), index=True)
     sent_at = Column(DateTime, nullable=True)
+
+
+class Project(Base):
+    __tablename__ = "projects"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    project_id = Column(String(50), unique=True, index=True)
+    name = Column(String(150), index=True)
+    slug = Column(String(150), unique=True, index=True)
+    description = Column(Text, nullable=True)
+    status = Column(String(50), index=True, default="active", server_default="active")
+    plan = Column(String(50), index=True, default="free", server_default="free")
+
+    created_at = Column(DateTime, server_default=func.now(), index=True)
+    updated_at = Column(DateTime, nullable=True, onupdate=func.now())
+    last_used_at = Column(DateTime, nullable=True)
+
+
+class ProjectApiKey(Base):
+    __tablename__ = "project_api_keys"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    key_id = Column(String(50), unique=True, index=True)
+    project_id = Column(String(50), index=True)
+    name = Column(String(150), nullable=True)
+    key_prefix = Column(String(32), index=True)
+    key_last4 = Column(String(4))
+    key_hash = Column(String(64), unique=True, index=True)
+    status = Column(String(50), index=True, default="active", server_default="active")
+
+    created_at = Column(DateTime, server_default=func.now(), index=True)
+    last_used_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+
+class ProjectUsageDaily(Base):
+    __tablename__ = "project_usage_daily"
+    __table_args__ = (
+        UniqueConstraint("project_id", "date", name="uq_project_usage_daily_project_date"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    project_id = Column(String(50), index=True)
+    date = Column(Date, index=True)
+    plan = Column(String(50), index=True)
+
+    logs_ingested = Column(Integer, default=0, server_default="0")
+    batches_ingested = Column(Integer, default=0, server_default="0")
+    async_tasks_created = Column(Integer, default=0, server_default="0")
+    predictions_created = Column(Integer, default=0, server_default="0")
+    incidents_created = Column(Integer, default=0, server_default="0")
+    notifications_sent = Column(Integer, default=0, server_default="0")
+    notifications_failed = Column(Integer, default=0, server_default="0")
+
+    created_at = Column(DateTime, server_default=func.now(), index=True)
+    updated_at = Column(DateTime, nullable=True, onupdate=func.now())
+
+
+class ProjectUsageEvent(Base):
+    __tablename__ = "project_usage_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    event_id = Column(String(50), unique=True, index=True)
+    project_id = Column(String(50), index=True)
+    event_type = Column(String(100), index=True)
+    quantity = Column(Integer, default=1, server_default="1")
+    metadata_json = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime, server_default=func.now(), index=True)

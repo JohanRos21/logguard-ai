@@ -17,6 +17,7 @@ from backend.app.services.notification_service import (
 )
 from backend.app.services.real_incident_service import generate_real_incidents
 from backend.app.services.realtime_sequence_service import analyze_recent_entity_sequences
+from backend.app.services.usage_service import increment_usage
 
 
 @app.task(name="logguard.ping_worker")
@@ -115,6 +116,7 @@ def send_webhook_notification(notification_event_id: str):
                 }
 
             event_id = event.event_id
+            project_id = event.project_id
             target = event.target or webhook_url()
             payload = event.payload or {}
 
@@ -147,6 +149,13 @@ def send_webhook_notification(notification_event_id: str):
                     response_status_code=status_code,
                     response_body=response_body,
                 )
+                increment_usage(
+                    db=session,
+                    project_id=project_id,
+                    metric="notifications_sent",
+                    quantity=1,
+                    metadata={"event_id": event_id, "status_code": status_code},
+                )
 
                 return {
                     "status": "sent",
@@ -161,6 +170,13 @@ def send_webhook_notification(notification_event_id: str):
                 error_message=f"Webhook returned HTTP {status_code}.",
                 response_status_code=status_code,
                 response_body=response_body,
+            )
+            increment_usage(
+                db=session,
+                project_id=project_id,
+                metric="notifications_failed",
+                quantity=1,
+                metadata={"event_id": event_id, "status_code": status_code},
             )
 
             return {
@@ -179,6 +195,14 @@ def send_webhook_notification(notification_event_id: str):
                     notification_id=notification_event_id,
                     error_message=error_message,
                 )
+                if notification:
+                    increment_usage(
+                        db=session,
+                        project_id=notification.get("project_id"),
+                        metric="notifications_failed",
+                        quantity=1,
+                        metadata={"event_id": notification.get("event_id")},
+                    )
         except Exception:
             notification = None
 
@@ -220,6 +244,7 @@ def analyze_ingested_entity(
     window_size: int = 20,
     source: Optional[str] = None,
     group_by: str = "ip",
+    project_id: Optional[str] = None,
 ):
     try:
         with get_db_session() as session:
@@ -229,6 +254,7 @@ def analyze_ingested_entity(
                 entity_id=entity_id,
                 window_size=window_size,
                 source=source,
+                project_id=project_id,
             )
 
         incident_result = None
@@ -238,6 +264,7 @@ def analyze_ingested_entity(
                 entity_type=entity_type,
                 entity_id=str(entity_id),
                 source=source,
+                project_id=project_id,
             )
 
         return build_completed_result(

@@ -17,6 +17,7 @@ from backend.app.services.real_incident_service import (
     safe_generate_real_incidents_for_entities,
     safe_generate_real_incidents_for_entity,
 )
+from backend.app.services.usage_service import enforce_plan_limit, increment_usage
 
 
 SENSITIVE_METADATA_KEYS = {
@@ -338,6 +339,7 @@ def compute_final_severity(session: Session, data: Dict[str, Any]) -> str:
 def serialize_ingested_log(row: IngestedLog) -> Dict[str, Any]:
     return {
         "id": row.id,
+        "project_id": row.project_id,
         "timestamp": row.timestamp.isoformat() if row.timestamp else None,
         "source": row.source,
         "environment": row.environment,
@@ -359,11 +361,16 @@ def serialize_ingested_log(row: IngestedLog) -> Dict[str, Any]:
     }
 
 
-def create_ingested_log(session: Session, payload: IngestLogRequest) -> IngestedLog:
+def create_ingested_log(
+    session: Session,
+    payload: IngestLogRequest,
+    project_id: Optional[str] = None,
+) -> IngestedLog:
     data = normalize_payload(payload)
     final_severity = compute_final_severity(session, data)
 
     row = IngestedLog(
+        project_id=project_id,
         timestamp=data["timestamp"],
         source=data["source"],
         environment=data["environment"],
@@ -433,23 +440,33 @@ def build_async_auto_analysis(queue_result: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def enqueue_auto_analysis_for_entity(entity_id: Optional[str]) -> Dict[str, Any]:
+def enqueue_auto_analysis_for_entity(
+    entity_id: Optional[str],
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
     queue_result = enqueue_ingested_entity_analysis(
         entity_type="ip",
         entity_id=entity_id,
         group_by="ip",
+        project_id=project_id,
+        track_usage=True,
     )
 
     return build_async_auto_analysis(queue_result)
 
 
-def enqueue_auto_analysis_for_entities(entity_ids: List[str]) -> Dict[str, Any]:
+def enqueue_auto_analysis_for_entities(
+    entity_ids: List[str],
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
     unique_entity_ids = sorted({str(entity_id) for entity_id in entity_ids if entity_id})
     task_results = [
         enqueue_ingested_entity_analysis(
             entity_type="ip",
             entity_id=entity_id,
             group_by="ip",
+            project_id=project_id,
+            track_usage=True,
         )
         for entity_id in unique_entity_ids
     ]
@@ -492,25 +509,51 @@ def enqueue_auto_analysis_for_entities(entity_ids: List[str]) -> Dict[str, Any]:
     }
 
 
-def ingest_log(payload: IngestLogRequest) -> Dict[str, Any]:
+def ingest_log(
+    payload: IngestLogRequest,
+    project_id: Optional[str] = None,
+    enforce_usage_limits: bool = False,
+    track_usage: bool = False,
+) -> Dict[str, Any]:
     with get_db_session() as session:
-        row = create_ingested_log(session, payload)
+        if project_id and enforce_usage_limits:
+            enforce_plan_limit(
+                db=session,
+                project_id=project_id,
+                metric="logs_ingested",
+                quantity=1,
+            )
+
+        row = create_ingested_log(session, payload, project_id=project_id)
+        if project_id and track_usage:
+            increment_usage(
+                db=session,
+                project_id=project_id,
+                metric="logs_ingested",
+                quantity=1,
+                metadata={"source": row.source, "route": row.route},
+            )
         result = ingestion_result(row)
         entity_id = row.ip
 
     if is_async_analysis_enabled():
-        result["auto_analysis"] = enqueue_auto_analysis_for_entity(entity_id)
+        result["auto_analysis"] = enqueue_auto_analysis_for_entity(
+            entity_id,
+            project_id=project_id,
+        )
         return result
 
     result["auto_analysis"] = safe_analyze_recent_entity_after_ingestion(
         entity_id=entity_id,
         group_by="ip",
+        project_id=project_id,
     )
 
     if result["auto_analysis"].get("anomalies_detected", 0) > 0:
         incident_result = safe_generate_real_incidents_for_entity(
             entity_type="ip",
             entity_id=entity_id,
+            project_id=project_id,
         )
         result["auto_analysis"] = attach_incident_generation_result(
             auto_analysis=result["auto_analysis"],
@@ -520,31 +563,71 @@ def ingest_log(payload: IngestLogRequest) -> Dict[str, Any]:
     return result
 
 
-def ingest_batch(payload: IngestBatchRequest) -> Dict[str, Any]:
+def ingest_batch(
+    payload: IngestBatchRequest,
+    project_id: Optional[str] = None,
+    enforce_usage_limits: bool = False,
+    track_usage: bool = False,
+) -> Dict[str, Any]:
     with get_db_session() as session:
         results = []
         affected_ips = []
 
+        if project_id and enforce_usage_limits:
+            enforce_plan_limit(
+                db=session,
+                project_id=project_id,
+                metric="batches_ingested",
+                quantity=1,
+            )
+            enforce_plan_limit(
+                db=session,
+                project_id=project_id,
+                metric="logs_ingested",
+                quantity=len(payload.logs),
+            )
+
         for log_payload in payload.logs:
-            row = create_ingested_log(session, log_payload)
+            row = create_ingested_log(session, log_payload, project_id=project_id)
             results.append(ingestion_result(row))
             affected_ips.append(row.ip)
+
+        if project_id and track_usage:
+            increment_usage(
+                db=session,
+                project_id=project_id,
+                metric="batches_ingested",
+                quantity=1,
+                metadata={"logs": len(payload.logs)},
+            )
+            increment_usage(
+                db=session,
+                project_id=project_id,
+                metric="logs_ingested",
+                quantity=len(payload.logs),
+                metadata={"batch": True},
+            )
 
     if is_async_analysis_enabled():
         return {
             "results": results,
-            "auto_analysis": enqueue_auto_analysis_for_entities(affected_ips),
+            "auto_analysis": enqueue_auto_analysis_for_entities(
+                affected_ips,
+                project_id=project_id,
+            ),
         }
 
     auto_analysis = safe_analyze_entities_after_ingestion(
         entity_ids=affected_ips,
         group_by="ip",
+        project_id=project_id,
     )
 
     if auto_analysis.get("anomalies_detected", 0) > 0:
         incident_result = safe_generate_real_incidents_for_entities(
             entity_type="ip",
             entity_ids=affected_ips,
+            project_id=project_id,
         )
         auto_analysis = attach_incident_generation_result(
             auto_analysis=auto_analysis,

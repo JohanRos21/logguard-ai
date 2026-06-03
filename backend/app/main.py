@@ -1,5 +1,6 @@
 import os
 import json
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -8,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
+from backend.app.database import get_db_session
 from backend.app.ingestion_schemas import (
     IngestBatchRequest,
     IngestLogRequest,
@@ -56,6 +58,30 @@ from backend.app.services.notification_service import (
     list_notification_events,
     queue_test_webhook_notification,
 )
+from backend.app.services.project_service import (
+    ProjectApiKeyNotFoundError,
+    ProjectConflictError,
+    ProjectNotFoundError,
+    ProjectServiceError,
+    ProjectValidationError,
+    create_project,
+    disable_project,
+    disable_project_api_key,
+    generate_project_api_key,
+    get_auth_context_from_token,
+    get_project_by_project_id,
+    list_project_api_keys,
+    list_projects,
+    rotate_project_api_key,
+    update_project,
+)
+from backend.app.services.usage_service import (
+    PlanLimitExceededError,
+    enforce_plan_limit,
+    get_plans,
+    get_usage_summary,
+    list_daily_usage,
+)
 
 from backend.app.v4_schemas import (
     V4AdaptiveBatchRequest,
@@ -69,6 +95,20 @@ from backend.app.v5_schemas import (
     V5NotificationSummaryResponse,
     V5ResolveIncidentRequest,
     V5TestWebhookRequest,
+)
+from backend.app.v6_schemas import (
+    V6AuthWhoAmIResponse,
+    V6PlanResponse,
+    V6ProjectApiKeyCreateRequest,
+    V6ProjectApiKeyItemResponse,
+    V6ProjectApiKeyListResponse,
+    V6ProjectCreateRequest,
+    V6ProjectItemResponse,
+    V6ProjectListResponse,
+    V6ProjectPlanUpdateRequest,
+    V6ProjectUpdateRequest,
+    V6UsageDailyResponse,
+    V6UsageSummaryResponse,
 )
 from backend.app.services.log_normalizer_service import (
     get_available_adapters,
@@ -139,6 +179,46 @@ def validate_ingestion_api_key(
         raise HTTPException(status_code=401, detail="Invalid API key.")
 
     return True
+
+
+def get_v6_auth_context(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(bearer_auth),
+):
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Missing authorization header.")
+
+    if credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Invalid authorization scheme.")
+
+    context = get_auth_context_from_token(credentials.credentials)
+
+    if not context:
+        raise HTTPException(status_code=401, detail="Invalid API key.")
+
+    return context
+
+
+def validate_v6_master_api_key(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(bearer_auth),
+):
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Missing authorization header.")
+
+    if credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Invalid authorization scheme.")
+
+    context = get_auth_context_from_token(
+        credentials.credentials,
+        update_last_used=False,
+    )
+
+    if not context:
+        raise HTTPException(status_code=401, detail="Invalid API key.")
+
+    if context.get("auth_type") != "master":
+        raise HTTPException(status_code=403, detail="Master API key required.")
+
+    return context
 
 
 class LogFeaturesInput(BaseModel):
@@ -820,8 +900,9 @@ def v4_normalization_preview(
 @app.post("/v4/ingest-adaptive-log")
 def v4_ingest_adaptive_log(
     request: V4AdaptiveLogRequest,
-    _authorized: bool = Depends(validate_ingestion_api_key),
+    auth_context: Dict[str, Any] = Depends(get_v6_auth_context),
 ):
+    project_id = project_id_from_auth_context(auth_context)
     result = normalize_v4_request(
         adapter=request.adapter,
         source=request.source,
@@ -841,7 +922,16 @@ def v4_ingest_adaptive_log(
 
     try:
         ingest_payload = normalized_log_to_ingest_request(result["normalized_log"])
-        ingestion_result = build_ingest_log_response(ingest_log(ingest_payload))
+        ingestion_result = build_ingest_log_response(
+            ingest_log(
+                ingest_payload,
+                project_id=project_id,
+                enforce_usage_limits=bool(project_id),
+                track_usage=bool(project_id),
+            )
+        )
+    except PlanLimitExceededError as error:
+        plan_limit_error_response(error)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
 
@@ -857,8 +947,9 @@ def v4_ingest_adaptive_log(
 @app.post("/v4/ingest-adaptive-batch")
 def v4_ingest_adaptive_batch(
     request: V4AdaptiveBatchRequest,
-    _authorized: bool = Depends(validate_ingestion_api_key),
+    auth_context: Dict[str, Any] = Depends(get_v6_auth_context),
 ):
+    project_id = project_id_from_auth_context(auth_context)
     normalized_payloads = []
     errors = []
 
@@ -894,7 +985,15 @@ def v4_ingest_adaptive_batch(
     ingestion_result = None
 
     if normalized_payloads:
-        batch_result = ingest_batch(IngestBatchRequest(logs=normalized_payloads))
+        try:
+            batch_result = ingest_batch(
+                IngestBatchRequest(logs=normalized_payloads),
+                project_id=project_id,
+                enforce_usage_limits=bool(project_id),
+                track_usage=bool(project_id),
+            )
+        except PlanLimitExceededError as error:
+            plan_limit_error_response(error)
         saved_results = batch_result["results"]
         ingestion_result = {
             "status": "accepted",
@@ -939,15 +1038,23 @@ def v5_worker_ping(message: str = "ping"):
 @app.post("/v5/analyze-entity-async")
 def v5_analyze_entity_async(
     request: V5AnalyzeEntityAsyncRequest,
-    _authorized: bool = Depends(validate_ingestion_api_key),
+    auth_context: Dict[str, Any] = Depends(get_v6_auth_context),
 ):
-    queue_result = enqueue_ingested_entity_analysis(
-        entity_type=request.entity_type,
-        entity_id=request.entity_id,
-        window_size=request.window_size,
-        source=request.source,
-        group_by=request.group_by,
-    )
+    project_id = project_id_from_auth_context(auth_context)
+
+    try:
+        queue_result = enqueue_ingested_entity_analysis(
+            entity_type=request.entity_type,
+            entity_id=request.entity_id,
+            window_size=request.window_size,
+            source=request.source,
+            group_by=request.group_by,
+            project_id=project_id,
+            enforce_usage_limits=bool(project_id),
+            track_usage=bool(project_id),
+        )
+    except PlanLimitExceededError as error:
+        plan_limit_error_response(error)
 
     if not queue_result.get("queued"):
         return {
@@ -962,6 +1069,7 @@ def v5_analyze_entity_async(
         "task_id": queue_result["task_id"],
         "entity_type": queue_result["entity_type"],
         "entity_id": queue_result["entity_id"],
+        "project_id": queue_result.get("project_id"),
     }
 
 
@@ -975,15 +1083,56 @@ def lifecycle_error_response(error: Exception):
     raise error
 
 
+def project_error_response(error: Exception):
+    if isinstance(error, (ProjectNotFoundError, ProjectApiKeyNotFoundError)):
+        raise HTTPException(status_code=404, detail=str(error))
+
+    if isinstance(error, ProjectConflictError):
+        raise HTTPException(status_code=409, detail=str(error))
+
+    if isinstance(error, ProjectValidationError):
+        raise HTTPException(status_code=400, detail=str(error))
+
+    if isinstance(error, ProjectServiceError):
+        raise HTTPException(status_code=400, detail=str(error))
+
+    raise error
+
+
+def plan_limit_error_response(error: PlanLimitExceededError):
+    raise HTTPException(
+        status_code=429,
+        detail={
+            "message": str(error),
+            "project_id": error.project_id,
+            "plan": error.plan,
+            "metric": error.metric,
+            "limit": error.limit,
+            "current": error.current,
+            "requested": error.requested,
+        },
+    )
+
+
+def project_id_from_auth_context(auth_context: Dict[str, Any]) -> Optional[str]:
+    if auth_context.get("auth_type") == "project":
+        return auth_context.get("project_id")
+
+    return None
+
+
 @app.get("/v5/incidents")
 def v5_incidents(
     status: Optional[str] = None,
     severity: Optional[str] = None,
     incident_type: Optional[str] = None,
     entity_id: Optional[str] = None,
+    project_id: Optional[str] = None,
     limit: int = Query(default=50, ge=1, le=500),
-    _authorized: bool = Depends(validate_ingestion_api_key),
+    auth_context: Dict[str, Any] = Depends(get_v6_auth_context),
 ):
+    effective_project_id = project_id_from_auth_context(auth_context) or project_id
+
     try:
         return {
             "version": "v5",
@@ -993,6 +1142,7 @@ def v5_incidents(
                 severity=severity,
                 incident_type=incident_type,
                 entity_id=entity_id,
+                project_id=effective_project_id,
                 limit=limit,
             ),
         }
@@ -1085,9 +1235,12 @@ def v5_notifications(
     channel: Optional[str] = None,
     event_type: Optional[str] = None,
     incident_id: Optional[str] = None,
+    project_id: Optional[str] = None,
     limit: int = Query(default=50, ge=1, le=500),
-    _authorized: bool = Depends(validate_ingestion_api_key),
+    auth_context: Dict[str, Any] = Depends(get_v6_auth_context),
 ):
+    effective_project_id = project_id_from_auth_context(auth_context) or project_id
+
     return {
         "version": "v5",
         "limit": limit,
@@ -1096,6 +1249,7 @@ def v5_notifications(
             channel=channel,
             event_type=event_type,
             incident_id=incident_id,
+            project_id=effective_project_id,
             limit=limit,
         ),
     }
@@ -1114,9 +1268,26 @@ def v5_notifications_summary(
 @app.post("/v5/notifications/test-webhook")
 def v5_test_webhook_notification(
     request: V5TestWebhookRequest,
-    _authorized: bool = Depends(validate_ingestion_api_key),
+    auth_context: Dict[str, Any] = Depends(get_v6_auth_context),
 ):
-    result = queue_test_webhook_notification(request.message)
+    project_id = project_id_from_auth_context(auth_context)
+
+    if project_id:
+        try:
+            with get_db_session() as session:
+                enforce_plan_limit(
+                    db=session,
+                    project_id=project_id,
+                    metric="notifications_sent",
+                    quantity=1,
+                )
+        except PlanLimitExceededError as error:
+            plan_limit_error_response(error)
+
+    result = queue_test_webhook_notification(
+        request.message,
+        project_id=project_id,
+    )
 
     return {
         "version": "v5",
@@ -1139,3 +1310,283 @@ def v5_task_status(task_id: str):
         response["result"] = result.result
 
     return response
+
+
+@app.get("/v6/auth/whoami", response_model=V6AuthWhoAmIResponse)
+def v6_auth_whoami(
+    auth_context: Dict[str, Any] = Depends(get_v6_auth_context),
+):
+    return {
+        "version": "v6",
+        **auth_context,
+    }
+
+
+@app.get("/v6/plans", response_model=V6PlanResponse)
+def v6_plans(
+    _auth_context: Dict[str, Any] = Depends(get_v6_auth_context),
+):
+    return {
+        "version": "v6",
+        "data": get_plans(),
+    }
+
+
+@app.get("/v6/usage/me", response_model=V6UsageSummaryResponse)
+def v6_usage_me(
+    project_id: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    auth_context: Dict[str, Any] = Depends(get_v6_auth_context),
+):
+    effective_project_id = project_id_from_auth_context(auth_context) or project_id
+
+    if not effective_project_id:
+        return {
+            "version": "v6",
+            "data": {
+                "auth_type": "master",
+                "message": "Provide project_id to inspect a project usage summary.",
+            },
+        }
+
+    return {
+        "version": "v6",
+        "data": get_usage_summary(
+            project_id=effective_project_id,
+            date_from=date_from,
+            date_to=date_to,
+        ),
+    }
+
+
+@app.post("/v6/projects", response_model=V6ProjectItemResponse)
+def v6_create_project(
+    request: V6ProjectCreateRequest,
+    _auth_context: Dict[str, Any] = Depends(validate_v6_master_api_key),
+):
+    try:
+        return {
+            "version": "v6",
+            "data": create_project(
+                name=request.name,
+                slug=request.slug,
+                description=request.description,
+                plan=request.plan,
+            ),
+        }
+    except Exception as error:
+        project_error_response(error)
+
+
+@app.get("/v6/projects", response_model=V6ProjectListResponse)
+def v6_list_projects(
+    status: Optional[str] = None,
+    plan: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=500),
+    _auth_context: Dict[str, Any] = Depends(validate_v6_master_api_key),
+):
+    try:
+        return {
+            "version": "v6",
+            "limit": limit,
+            "data": list_projects(
+                status=status,
+                plan=plan,
+                limit=limit,
+            ),
+        }
+    except Exception as error:
+        project_error_response(error)
+
+
+@app.get("/v6/projects/{project_id}", response_model=V6ProjectItemResponse)
+def v6_get_project(
+    project_id: str,
+    _auth_context: Dict[str, Any] = Depends(validate_v6_master_api_key),
+):
+    try:
+        return {
+            "version": "v6",
+            "data": get_project_by_project_id(project_id),
+        }
+    except Exception as error:
+        project_error_response(error)
+
+
+@app.patch("/v6/projects/{project_id}", response_model=V6ProjectItemResponse)
+def v6_update_project(
+    project_id: str,
+    request: V6ProjectUpdateRequest,
+    _auth_context: Dict[str, Any] = Depends(validate_v6_master_api_key),
+):
+    try:
+        return {
+            "version": "v6",
+            "data": update_project(
+                project_id=project_id,
+                name=request.name,
+                slug=request.slug,
+                description=request.description,
+                status=request.status,
+                plan=request.plan,
+            ),
+        }
+    except Exception as error:
+        project_error_response(error)
+
+
+@app.patch("/v6/projects/{project_id}/disable", response_model=V6ProjectItemResponse)
+def v6_disable_project(
+    project_id: str,
+    _auth_context: Dict[str, Any] = Depends(validate_v6_master_api_key),
+):
+    try:
+        return {
+            "version": "v6",
+            "data": disable_project(project_id),
+        }
+    except Exception as error:
+        project_error_response(error)
+
+
+@app.patch("/v6/projects/{project_id}/plan", response_model=V6ProjectItemResponse)
+def v6_update_project_plan(
+    project_id: str,
+    request: V6ProjectPlanUpdateRequest,
+    _auth_context: Dict[str, Any] = Depends(validate_v6_master_api_key),
+):
+    try:
+        return {
+            "version": "v6",
+            "data": update_project(
+                project_id=project_id,
+                plan=request.plan,
+            ),
+        }
+    except Exception as error:
+        project_error_response(error)
+
+
+@app.get("/v6/projects/{project_id}/usage", response_model=V6UsageSummaryResponse)
+def v6_project_usage_summary(
+    project_id: str,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    _auth_context: Dict[str, Any] = Depends(validate_v6_master_api_key),
+):
+    return {
+        "version": "v6",
+        "data": get_usage_summary(
+            project_id=project_id,
+            date_from=date_from,
+            date_to=date_to,
+        ),
+    }
+
+
+@app.get("/v6/projects/{project_id}/usage/daily", response_model=V6UsageDailyResponse)
+def v6_project_usage_daily(
+    project_id: str,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    limit: int = Query(default=90, ge=1, le=366),
+    _auth_context: Dict[str, Any] = Depends(validate_v6_master_api_key),
+):
+    return {
+        "version": "v6",
+        "limit": limit,
+        "data": list_daily_usage(
+            project_id=project_id,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+        ),
+    }
+
+
+@app.post(
+    "/v6/projects/{project_id}/api-keys",
+    response_model=V6ProjectApiKeyItemResponse,
+)
+def v6_create_project_api_key(
+    project_id: str,
+    request: V6ProjectApiKeyCreateRequest,
+    _auth_context: Dict[str, Any] = Depends(validate_v6_master_api_key),
+):
+    try:
+        return {
+            "version": "v6",
+            "data": generate_project_api_key(
+                project_id=project_id,
+                name=request.name,
+            ),
+        }
+    except Exception as error:
+        project_error_response(error)
+
+
+@app.get(
+    "/v6/projects/{project_id}/api-keys",
+    response_model=V6ProjectApiKeyListResponse,
+)
+def v6_list_project_api_keys(
+    project_id: str,
+    status: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=500),
+    _auth_context: Dict[str, Any] = Depends(validate_v6_master_api_key),
+):
+    try:
+        return {
+            "version": "v6",
+            "limit": limit,
+            "data": list_project_api_keys(
+                project_id=project_id,
+                status=status,
+                limit=limit,
+            ),
+        }
+    except Exception as error:
+        project_error_response(error)
+
+
+@app.patch(
+    "/v6/projects/{project_id}/api-keys/{key_id}/disable",
+    response_model=V6ProjectApiKeyItemResponse,
+)
+def v6_disable_project_api_key(
+    project_id: str,
+    key_id: str,
+    _auth_context: Dict[str, Any] = Depends(validate_v6_master_api_key),
+):
+    try:
+        return {
+            "version": "v6",
+            "data": disable_project_api_key(
+                project_id=project_id,
+                key_id=key_id,
+            ),
+        }
+    except Exception as error:
+        project_error_response(error)
+
+
+@app.post(
+    "/v6/projects/{project_id}/rotate-api-key",
+    response_model=V6ProjectApiKeyItemResponse,
+)
+def v6_rotate_project_api_key(
+    project_id: str,
+    request: Optional[V6ProjectApiKeyCreateRequest] = None,
+    _auth_context: Dict[str, Any] = Depends(validate_v6_master_api_key),
+):
+    try:
+        return {
+            "version": "v6",
+            "data": rotate_project_api_key(
+                project_id=project_id,
+                name=request.name if request else None,
+            ),
+        }
+    except Exception as error:
+        project_error_response(error)

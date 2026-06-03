@@ -40,6 +40,16 @@ from backend.app.services.real_incident_service import (
     get_real_incidents_summary,
 )
 
+from backend.app.v4_schemas import (
+    V4AdaptiveBatchRequest,
+    V4AdaptiveLogRequest,
+    V4NormalizationPreviewRequest,
+)
+from backend.app.services.log_normalizer_service import (
+    get_available_adapters,
+    normalize_external_log,
+)
+
 
 RULE_ALERTS_PATH = "reports/rule_alerts.csv"
 ML_ANOMALIES_PATH = "reports/ml_anomalies.csv"
@@ -693,3 +703,169 @@ def v3_real_incidents(
 @app.get("/v3/real-incidents/summary")
 def v3_real_incidents_summary():
     return get_real_incidents_summary()
+
+
+def normalize_v4_request(
+    adapter: str,
+    source: Optional[str],
+    environment: Optional[str],
+    payload: Any,
+) -> Dict[str, Any]:
+    return normalize_external_log(
+        raw_log={
+            "source": source,
+            "environment": environment,
+            "payload": payload,
+        },
+        adapter=adapter,
+        source=source,
+        environment=environment,
+    )
+
+
+def normalized_log_to_ingest_request(normalized_log: Dict[str, Any]) -> IngestLogRequest:
+    return IngestLogRequest(**normalized_log)
+
+
+def build_ingest_log_response(result: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "status": "accepted",
+        "id": result["id"],
+        "source_severity": result["source_severity"],
+        "final_severity": result["final_severity"],
+        "auto_analysis": result["auto_analysis"],
+    }
+
+
+@app.get("/v4/adapters")
+def v4_adapters():
+    return {
+        "version": "v4",
+        "feature": "Universal Log Adapter",
+        "available_adapters": get_available_adapters(),
+    }
+
+
+@app.post("/v4/normalization-preview")
+def v4_normalization_preview(
+    request: V4NormalizationPreviewRequest,
+    _authorized: bool = Depends(validate_ingestion_api_key),
+):
+    result = normalize_v4_request(
+        adapter=request.adapter,
+        source=request.source,
+        environment=request.environment,
+        payload=request.payload,
+    )
+
+    return {
+        "version": "v4",
+        "mode": "preview",
+        **result,
+    }
+
+
+@app.post("/v4/ingest-adaptive-log")
+def v4_ingest_adaptive_log(
+    request: V4AdaptiveLogRequest,
+    _authorized: bool = Depends(validate_ingestion_api_key),
+):
+    result = normalize_v4_request(
+        adapter=request.adapter,
+        source=request.source,
+        environment=request.environment,
+        payload=request.payload,
+    )
+
+    if not result["success"]:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "adapter_used": result["adapter_used"],
+                "errors": result["errors"],
+                "warnings": result["warnings"],
+            },
+        )
+
+    try:
+        ingest_payload = normalized_log_to_ingest_request(result["normalized_log"])
+        ingestion_result = build_ingest_log_response(ingest_log(ingest_payload))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+    return {
+        "version": "v4",
+        "status": "accepted",
+        "adapter_used": result["adapter_used"],
+        "normalized_log": result["normalized_log"],
+        "ingestion_result": ingestion_result,
+    }
+
+
+@app.post("/v4/ingest-adaptive-batch")
+def v4_ingest_adaptive_batch(
+    request: V4AdaptiveBatchRequest,
+    _authorized: bool = Depends(validate_ingestion_api_key),
+):
+    normalized_payloads = []
+    errors = []
+
+    for index, raw_log in enumerate(request.logs):
+        result = normalize_v4_request(
+            adapter=request.adapter,
+            source=request.source,
+            environment=request.environment,
+            payload=raw_log,
+        )
+
+        if not result["success"]:
+            errors.append({
+                "index": index,
+                "adapter_used": result["adapter_used"],
+                "errors": result["errors"],
+                "warnings": result["warnings"],
+            })
+            continue
+
+        try:
+            normalized_payloads.append(
+                normalized_log_to_ingest_request(result["normalized_log"])
+            )
+        except ValueError as error:
+            errors.append({
+                "index": index,
+                "adapter_used": result["adapter_used"],
+                "errors": [str(error)],
+                "warnings": result["warnings"],
+            })
+
+    ingestion_result = None
+
+    if normalized_payloads:
+        batch_result = ingest_batch(IngestBatchRequest(logs=normalized_payloads))
+        saved_results = batch_result["results"]
+        ingestion_result = {
+            "status": "accepted",
+            "total_received": len(normalized_payloads),
+            "total_saved": len(saved_results),
+            "saved_ids": [item["id"] for item in saved_results],
+            "auto_analysis": batch_result["auto_analysis"],
+        }
+
+    total_failed = len(errors)
+    status = "accepted"
+
+    if total_failed and normalized_payloads:
+        status = "partial"
+    elif total_failed and not normalized_payloads:
+        status = "failed"
+
+    return {
+        "version": "v4",
+        "status": status,
+        "total_received": len(request.logs),
+        "total_normalized": len(normalized_payloads),
+        "total_failed": total_failed,
+        "ingestion_result": ingestion_result,
+        "errors": errors,
+    }

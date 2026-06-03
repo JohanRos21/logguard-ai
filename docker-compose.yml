@@ -17,5 +17,20 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    container_name: logguard_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - logguard_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   logguard_postgres_data:
+  logguard_redis_data:

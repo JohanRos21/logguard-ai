@@ -1,0 +1,11 @@
+[33mb6c614a[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;33mtag: [m[1;33mv4.0.0[m[33m, [m[1;31morigin/main[m[33m)[m feat: add v4 universal log adapter
+[33m9fe631e[m feat: add v4 common log parsers
+[33m9bf77ce[m[33m ([m[1;33mtag: [m[1;33mv3.0.0[m[33m)[m docs: update readme for LogGuard AI v3
+[33me6e34ea[m docs: document real monitoring api
+[33m7016894[m feat: generate real incidents from ingested anomalies
+[33mddcf5c6[m feat: auto analyze ingested logs with transformer
+[33ma8b2f55[m feat: add real log ingestion and transformer inference
+[33med8ddf1[m feat: add LogGuard AI v3 postgres dashboard integration
+[33m8684484[m[33m ([m[1;33mtag: [m[1;33mv2.0.0[m[33m)[m feat: add LogGuard AI v2 sequence transformer
+[33m6ebb51e[m feat: add LogGuard AI v2 sequence transformer
+[33m6b2fba4[m[33m ([m[1;33mtag: [m[1;33mv1.0.0[m[33m)[m feat: add LogGuard AI v1

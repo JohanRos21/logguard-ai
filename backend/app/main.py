@@ -40,16 +40,23 @@ from backend.app.services.real_incident_service import (
     get_real_incidents,
     get_real_incidents_summary,
 )
+from backend.app.services.async_analysis_service import enqueue_ingested_entity_analysis
 
 from backend.app.v4_schemas import (
     V4AdaptiveBatchRequest,
     V4AdaptiveLogRequest,
     V4NormalizationPreviewRequest,
 )
+from backend.app.v5_schemas import V5AnalyzeEntityAsyncRequest
 from backend.app.services.log_normalizer_service import (
     get_available_adapters,
     normalize_external_log,
 )
+
+from celery.result import AsyncResult
+
+from backend.app.celery_app import app as celery_app
+from backend.app.tasks import ping_worker
 
 
 RULE_ALERTS_PATH = "reports/rule_alerts.csv"
@@ -874,3 +881,62 @@ def v4_ingest_adaptive_batch(
         "ingestion_result": ingestion_result,
         "errors": errors,
     }
+
+
+
+@app.post("/v5/worker-ping")
+def v5_worker_ping(message: str = "ping"):
+    task = ping_worker.delay(message)
+
+    return {
+        "version": "v5",
+        "status": "queued",
+        "task_id": task.id,
+        "message": message,
+    }
+
+
+@app.post("/v5/analyze-entity-async")
+def v5_analyze_entity_async(
+    request: V5AnalyzeEntityAsyncRequest,
+    _authorized: bool = Depends(validate_ingestion_api_key),
+):
+    queue_result = enqueue_ingested_entity_analysis(
+        entity_type=request.entity_type,
+        entity_id=request.entity_id,
+        window_size=request.window_size,
+        source=request.source,
+        group_by=request.group_by,
+    )
+
+    if not queue_result.get("queued"):
+        return {
+            "version": "v5",
+            "status": "queue_failed",
+            **queue_result,
+        }
+
+    return {
+        "version": "v5",
+        "status": "queued",
+        "task_id": queue_result["task_id"],
+        "entity_type": queue_result["entity_type"],
+        "entity_id": queue_result["entity_id"],
+    }
+
+
+@app.get("/v5/tasks/{task_id}")
+def v5_task_status(task_id: str):
+    result = AsyncResult(task_id, app=celery_app)
+
+    response = {
+        "version": "v5",
+        "task_id": task_id,
+        "status": result.status,
+        "ready": result.ready(),
+    }
+
+    if result.ready():
+        response["result"] = result.result
+
+    return response

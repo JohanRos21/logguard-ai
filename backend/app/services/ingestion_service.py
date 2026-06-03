@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -7,6 +8,7 @@ from sqlalchemy.orm import Session
 from backend.app.database import get_db_session
 from backend.app.db_models import IngestedLog
 from backend.app.ingestion_schemas import IngestBatchRequest, IngestLogRequest
+from backend.app.services.async_analysis_service import enqueue_ingested_entity_analysis
 from backend.app.services.realtime_sequence_service import (
     safe_analyze_entities_after_ingestion,
     safe_analyze_recent_entity_after_ingestion,
@@ -63,6 +65,15 @@ CRITICAL_EVENTS = {
     "database_timeout",
     "login_attempt_after_block",
 }
+
+
+def is_async_analysis_enabled() -> bool:
+    return os.getenv("LOGGUARD_ASYNC_ANALYSIS", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def sanitize_metadata(value: Any) -> Any:
@@ -401,11 +412,95 @@ def attach_incident_generation_result(
     return auto_analysis
 
 
+def build_async_auto_analysis(queue_result: Dict[str, Any]) -> Dict[str, Any]:
+    if queue_result.get("queued"):
+        return {
+            "status": "queued",
+            "mode": "async",
+            "task_id": queue_result["task_id"],
+            "queue": queue_result["queue"],
+            "entity_type": queue_result["entity_type"],
+            "entity_id": queue_result["entity_id"],
+        }
+
+    return {
+        "status": "queue_failed",
+        "mode": "async",
+        "queue": queue_result.get("queue", "celery"),
+        "entity_type": queue_result.get("entity_type", "ip"),
+        "entity_id": queue_result.get("entity_id", ""),
+        "error": queue_result.get("error", "Redis/Celery unavailable"),
+    }
+
+
+def enqueue_auto_analysis_for_entity(entity_id: Optional[str]) -> Dict[str, Any]:
+    queue_result = enqueue_ingested_entity_analysis(
+        entity_type="ip",
+        entity_id=entity_id,
+        group_by="ip",
+    )
+
+    return build_async_auto_analysis(queue_result)
+
+
+def enqueue_auto_analysis_for_entities(entity_ids: List[str]) -> Dict[str, Any]:
+    unique_entity_ids = sorted({str(entity_id) for entity_id in entity_ids if entity_id})
+    task_results = [
+        enqueue_ingested_entity_analysis(
+            entity_type="ip",
+            entity_id=entity_id,
+            group_by="ip",
+        )
+        for entity_id in unique_entity_ids
+    ]
+    queued_results = [result for result in task_results if result.get("queued")]
+    failed_results = [result for result in task_results if not result.get("queued")]
+
+    if failed_results and not queued_results:
+        return {
+            "status": "queue_failed",
+            "mode": "async",
+            "queue": "celery",
+            "entities_checked": len(unique_entity_ids),
+            "task_ids": [],
+            "failed_entities": [
+                {
+                    "entity_type": result.get("entity_type", "ip"),
+                    "entity_id": result.get("entity_id", ""),
+                    "error": result.get("error", "Redis/Celery unavailable"),
+                }
+                for result in failed_results
+            ],
+        }
+
+    return {
+        "status": "queued" if not failed_results else "partial",
+        "mode": "async",
+        "queue": "celery",
+        "entities_checked": len(unique_entity_ids),
+        "task_ids": [result["task_id"] for result in queued_results],
+        "queued_tasks": len(queued_results),
+        "queue_failures": len(failed_results),
+        "failed_entities": [
+            {
+                "entity_type": result.get("entity_type", "ip"),
+                "entity_id": result.get("entity_id", ""),
+                "error": result.get("error", "Redis/Celery unavailable"),
+            }
+            for result in failed_results
+        ],
+    }
+
+
 def ingest_log(payload: IngestLogRequest) -> Dict[str, Any]:
     with get_db_session() as session:
         row = create_ingested_log(session, payload)
         result = ingestion_result(row)
         entity_id = row.ip
+
+    if is_async_analysis_enabled():
+        result["auto_analysis"] = enqueue_auto_analysis_for_entity(entity_id)
+        return result
 
     result["auto_analysis"] = safe_analyze_recent_entity_after_ingestion(
         entity_id=entity_id,
@@ -434,6 +529,12 @@ def ingest_batch(payload: IngestBatchRequest) -> Dict[str, Any]:
             row = create_ingested_log(session, log_payload)
             results.append(ingestion_result(row))
             affected_ips.append(row.ip)
+
+    if is_async_analysis_enabled():
+        return {
+            "results": results,
+            "auto_analysis": enqueue_auto_analysis_for_entities(affected_ips),
+        }
 
     auto_analysis = safe_analyze_entities_after_ingestion(
         entity_ids=affected_ips,

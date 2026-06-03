@@ -30,3 +30,4 @@ class IngestLogResponse(BaseModel):
     id: int
     source_severity: str
     final_severity: str
+    auto_analysis: Optional[Dict[str, Any]] = None

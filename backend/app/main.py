@@ -551,6 +551,7 @@ def v3_ingest_log(
             "id": result["id"],
             "source_severity": result["source_severity"],
             "final_severity": result["final_severity"],
+            "auto_analysis": result["auto_analysis"],
         }
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
@@ -562,13 +563,15 @@ def v3_ingest_batch(
     _authorized: bool = Depends(validate_ingestion_api_key),
 ):
     try:
-        results = ingest_batch(payload)
+        batch_result = ingest_batch(payload)
+        results = batch_result["results"]
 
         return {
             "status": "accepted",
             "total_received": len(payload.logs),
             "total_saved": len(results),
             "saved_ids": [result["id"] for result in results],
+            "auto_analysis": batch_result["auto_analysis"],
         }
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))

@@ -7,6 +7,10 @@ from sqlalchemy.orm import Session
 from backend.app.database import get_db_session
 from backend.app.db_models import IngestedLog
 from backend.app.ingestion_schemas import IngestBatchRequest, IngestLogRequest
+from backend.app.services.realtime_sequence_service import (
+    safe_analyze_entities_after_ingestion,
+    safe_analyze_recent_entity_after_ingestion,
+)
 
 
 SENSITIVE_METADATA_KEYS = {
@@ -381,16 +385,36 @@ def ingestion_result(row: IngestedLog) -> Dict[str, Any]:
 def ingest_log(payload: IngestLogRequest) -> Dict[str, Any]:
     with get_db_session() as session:
         row = create_ingested_log(session, payload)
+        result = ingestion_result(row)
+        entity_id = row.ip
 
-        return ingestion_result(row)
+    result["auto_analysis"] = safe_analyze_recent_entity_after_ingestion(
+        entity_id=entity_id,
+        group_by="ip",
+    )
+
+    return result
 
 
-def ingest_batch(payload: IngestBatchRequest) -> List[Dict[str, Any]]:
+def ingest_batch(payload: IngestBatchRequest) -> Dict[str, Any]:
     with get_db_session() as session:
-        return [
-            ingestion_result(create_ingested_log(session, log_payload))
-            for log_payload in payload.logs
-        ]
+        results = []
+        affected_ips = []
+
+        for log_payload in payload.logs:
+            row = create_ingested_log(session, log_payload)
+            results.append(ingestion_result(row))
+            affected_ips.append(row.ip)
+
+    auto_analysis = safe_analyze_entities_after_ingestion(
+        entity_ids=affected_ips,
+        group_by="ip",
+    )
+
+    return {
+        "results": results,
+        "auto_analysis": auto_analysis,
+    }
 
 
 def get_ingested_logs(

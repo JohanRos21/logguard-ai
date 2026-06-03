@@ -145,6 +145,32 @@ def prediction_exists(session: Session, hash_value: str) -> bool:
     )
 
 
+def build_insufficient_logs_result(
+    entity_type: str,
+    entity_id: str,
+    window_size: int,
+    available_logs: int,
+) -> Dict[str, Any]:
+    return {
+        "status": "insufficient_logs",
+        "entity_type": entity_type,
+        "entity_id": str(entity_id),
+        "required_window_size": window_size,
+        "available_logs": available_logs,
+    }
+
+
+def build_duplicate_result(entity_type: str, entity_id: str) -> Dict[str, Any]:
+    return {
+        "status": "duplicate",
+        "entity_type": entity_type,
+        "entity_id": str(entity_id),
+        "sequences_analyzed": 0,
+        "anomalies_detected": 0,
+        "skipped_duplicates": 1,
+    }
+
+
 def build_prediction_record(
     entity_type: str,
     entity_id: str,
@@ -182,6 +208,160 @@ def build_prediction_record(
     )
 
 
+def analyze_recent_entity_sequences(
+    session: Session,
+    group_by: str = "ip",
+    entity_id: Optional[str] = None,
+    window_size: int = MODEL_WINDOW_SIZE,
+    source: Optional[str] = None,
+) -> Dict[str, Any]:
+    group_by = validate_group_by(group_by)
+    window_size = validate_window_size(window_size)
+
+    if not entity_id:
+        return build_insufficient_logs_result(
+            entity_type=group_by,
+            entity_id="",
+            window_size=window_size,
+            available_logs=0,
+        )
+
+    logs = get_logs_for_entity(
+        session=session,
+        group_by=group_by,
+        entity_id=str(entity_id),
+        source=source,
+    )
+
+    if len(logs) < window_size:
+        return build_insufficient_logs_result(
+            entity_type=group_by,
+            entity_id=str(entity_id),
+            window_size=window_size,
+            available_logs=len(logs),
+        )
+
+    window_logs = logs[-window_size:]
+    hash_value = sequence_hash(group_by, str(entity_id), window_logs)
+
+    if prediction_exists(session, hash_value):
+        return build_duplicate_result(
+            entity_type=group_by,
+            entity_id=str(entity_id),
+        )
+
+    record = build_prediction_record(
+        entity_type=group_by,
+        entity_id=str(entity_id),
+        logs=window_logs,
+        hash_value=hash_value,
+    )
+
+    session.add(record)
+
+    anomalies_detected = 1 if record.ai_prediction == "anomaly" else 0
+
+    return {
+        "status": "analyzed",
+        "entity_type": group_by,
+        "entity_id": str(entity_id),
+        "sequences_analyzed": 1,
+        "anomalies_detected": anomalies_detected,
+    }
+
+
+def analyze_entities_after_ingestion(
+    entity_ids: List[str],
+    group_by: str = "ip",
+    window_size: int = MODEL_WINDOW_SIZE,
+    source: Optional[str] = None,
+) -> Dict[str, int]:
+    group_by = validate_group_by(group_by)
+    window_size = validate_window_size(window_size)
+
+    unique_entity_ids = sorted({str(entity_id) for entity_id in entity_ids if entity_id})
+    summary = {
+        "entities_checked": 0,
+        "sequences_analyzed": 0,
+        "anomalies_detected": 0,
+        "skipped_insufficient_logs": 0,
+        "skipped_duplicates": 0,
+    }
+
+    with get_db_session() as session:
+        for entity_id in unique_entity_ids:
+            summary["entities_checked"] += 1
+            result = analyze_recent_entity_sequences(
+                session=session,
+                group_by=group_by,
+                entity_id=entity_id,
+                window_size=window_size,
+                source=source,
+            )
+
+            if result["status"] == "insufficient_logs":
+                summary["skipped_insufficient_logs"] += 1
+                continue
+
+            if result["status"] == "duplicate":
+                summary["skipped_duplicates"] += 1
+                continue
+
+            summary["sequences_analyzed"] += result.get("sequences_analyzed", 0)
+            summary["anomalies_detected"] += result.get("anomalies_detected", 0)
+
+    return summary
+
+
+def safe_analyze_recent_entity_after_ingestion(
+    entity_id: Optional[str],
+    group_by: str = "ip",
+    window_size: int = MODEL_WINDOW_SIZE,
+    source: Optional[str] = None,
+) -> Dict[str, Any]:
+    try:
+        with get_db_session() as session:
+            return analyze_recent_entity_sequences(
+                session=session,
+                group_by=group_by,
+                entity_id=entity_id,
+                window_size=window_size,
+                source=source,
+            )
+    except Exception as error:
+        return {
+            "status": "failed",
+            "entity_type": group_by,
+            "entity_id": str(entity_id) if entity_id else "",
+            "error": str(error)[:250],
+        }
+
+
+def safe_analyze_entities_after_ingestion(
+    entity_ids: List[str],
+    group_by: str = "ip",
+    window_size: int = MODEL_WINDOW_SIZE,
+    source: Optional[str] = None,
+) -> Dict[str, Any]:
+    try:
+        return analyze_entities_after_ingestion(
+            entity_ids=entity_ids,
+            group_by=group_by,
+            window_size=window_size,
+            source=source,
+        )
+    except Exception as error:
+        return {
+            "status": "failed",
+            "entities_checked": 0,
+            "sequences_analyzed": 0,
+            "anomalies_detected": 0,
+            "skipped_insufficient_logs": 0,
+            "skipped_duplicates": 0,
+            "error": str(error)[:250],
+        }
+
+
 def analyze_ingested_sequences(
     group_by: str = "ip",
     window_size: int = MODEL_WINDOW_SIZE,
@@ -195,6 +375,7 @@ def analyze_ingested_sequences(
     sequences_analyzed = 0
     anomalies_detected = 0
     skipped_insufficient_logs = 0
+    skipped_duplicates = 0
 
     with get_db_session() as session:
         entity_rows = get_entity_rows(
@@ -222,6 +403,7 @@ def analyze_ingested_sequences(
                 hash_value = sequence_hash(group_by, str(entity_id), window_logs)
 
                 if prediction_exists(session, hash_value):
+                    skipped_duplicates += 1
                     continue
 
                 record = build_prediction_record(
@@ -242,6 +424,7 @@ def analyze_ingested_sequences(
         "sequences_analyzed": sequences_analyzed,
         "anomalies_detected": anomalies_detected,
         "skipped_insufficient_logs": skipped_insufficient_logs,
+        "skipped_duplicates": skipped_duplicates,
     }
 
 

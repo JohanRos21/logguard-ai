@@ -34,6 +34,11 @@ from backend.app.services.realtime_sequence_service import (
     get_ingested_sequence_predictions,
     get_real_monitoring_summary,
 )
+from backend.app.services.real_incident_service import (
+    generate_real_incidents,
+    get_real_incidents,
+    get_real_incidents_summary,
+)
 
 
 RULE_ALERTS_PATH = "reports/rule_alerts.csv"
@@ -651,3 +656,40 @@ def v3_ingested_sequence_predictions(
 @app.get("/v3/real-monitoring-summary")
 def v3_real_monitoring_summary():
     return get_real_monitoring_summary()
+
+
+@app.post("/v3/generate-real-incidents")
+def v3_generate_real_incidents():
+    try:
+        return generate_real_incidents()
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+@app.get("/v3/real-incidents")
+def v3_real_incidents(
+    severity: Optional[str] = None,
+    status: Optional[str] = None,
+    incident_type: Optional[str] = None,
+    entity_id: Optional[str] = None,
+    source: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    return {
+        "version": "v3",
+        "storage": "PostgreSQL",
+        "limit": limit,
+        "data": get_real_incidents(
+            limit=limit,
+            severity=severity,
+            status=status,
+            incident_type=incident_type,
+            entity_id=entity_id,
+            source=source,
+        ),
+    }
+
+
+@app.get("/v3/real-incidents/summary")
+def v3_real_incidents_summary():
+    return get_real_incidents_summary()

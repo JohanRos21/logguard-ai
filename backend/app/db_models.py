@@ -250,3 +250,37 @@ class IngestedSequencePrediction(Base):
     source = Column(String(100), index=True)
 
     created_at = Column(DateTime, server_default=func.now())
+
+
+class RealIncident(Base):
+    __tablename__ = "real_incidents"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    incident_id = Column(String(80), unique=True, index=True)
+    incident_hash = Column(String(64), unique=True, index=True)
+
+    title = Column(String(255))
+    incident_type = Column(String(100), index=True)
+    severity = Column(String(50), index=True)
+    status = Column(String(50), index=True)
+
+    entity_type = Column(String(50), index=True)
+    entity_id = Column(String(100), index=True)
+    source = Column(String(100), index=True)
+
+    first_seen = Column(DateTime, index=True)
+    last_seen = Column(DateTime, index=True)
+    events_count = Column(Integer)
+    sequences_count = Column(Integer)
+    max_anomaly_probability = Column(Float)
+
+    related_routes = Column(Text)
+    related_event_types = Column(Text)
+    related_sequence_ids = Column(Text)
+
+    reason = Column(Text)
+    recommendation = Column(Text)
+
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

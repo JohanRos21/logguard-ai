@@ -11,6 +11,10 @@ from backend.app.services.realtime_sequence_service import (
     safe_analyze_entities_after_ingestion,
     safe_analyze_recent_entity_after_ingestion,
 )
+from backend.app.services.real_incident_service import (
+    safe_generate_real_incidents_for_entities,
+    safe_generate_real_incidents_for_entity,
+)
 
 
 SENSITIVE_METADATA_KEYS = {
@@ -382,6 +386,21 @@ def ingestion_result(row: IngestedLog) -> Dict[str, Any]:
     }
 
 
+def attach_incident_generation_result(
+    auto_analysis: Dict[str, Any],
+    incident_result: Dict[str, Any],
+) -> Dict[str, Any]:
+    if incident_result.get("status") == "failed":
+        auto_analysis["incident_generation_status"] = "failed"
+        auto_analysis["incident_generation_error"] = incident_result.get("error")
+        return auto_analysis
+
+    auto_analysis["incidents_created"] = incident_result.get("incidents_created", 0)
+    auto_analysis["incidents_updated"] = incident_result.get("incidents_updated", 0)
+
+    return auto_analysis
+
+
 def ingest_log(payload: IngestLogRequest) -> Dict[str, Any]:
     with get_db_session() as session:
         row = create_ingested_log(session, payload)
@@ -392,6 +411,16 @@ def ingest_log(payload: IngestLogRequest) -> Dict[str, Any]:
         entity_id=entity_id,
         group_by="ip",
     )
+
+    if result["auto_analysis"].get("anomalies_detected", 0) > 0:
+        incident_result = safe_generate_real_incidents_for_entity(
+            entity_type="ip",
+            entity_id=entity_id,
+        )
+        result["auto_analysis"] = attach_incident_generation_result(
+            auto_analysis=result["auto_analysis"],
+            incident_result=incident_result,
+        )
 
     return result
 
@@ -410,6 +439,16 @@ def ingest_batch(payload: IngestBatchRequest) -> Dict[str, Any]:
         entity_ids=affected_ips,
         group_by="ip",
     )
+
+    if auto_analysis.get("anomalies_detected", 0) > 0:
+        incident_result = safe_generate_real_incidents_for_entities(
+            entity_type="ip",
+            entity_ids=affected_ips,
+        )
+        auto_analysis = attach_incident_generation_result(
+            auto_analysis=auto_analysis,
+            incident_result=incident_result,
+        )
 
     return {
         "results": results,

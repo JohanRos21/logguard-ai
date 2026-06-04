@@ -122,7 +122,7 @@ def ensure_table(connection, table_name: str) -> bool:
             """
         )
     )
-
+    
     return existed_before
 
 

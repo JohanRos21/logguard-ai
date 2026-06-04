@@ -101,3 +101,65 @@ class V6UsageDailyResponse(BaseModel):
 
 class V6ProjectPlanUpdateRequest(BaseModel):
     plan: str = Field(...)
+
+
+class V6IncidentFeedbackCreateRequest(BaseModel):
+    label: str = Field(...)
+    prediction_id: Optional[str] = None
+    project_id: Optional[str] = None
+    confidence: Optional[float] = Field(default=None, ge=0, le=1)
+    reviewer: Optional[str] = Field(default=None, max_length=150)
+    note: Optional[str] = None
+    source: str = Field(default="manual")
+
+
+class V6IncidentFeedbackResponse(BaseModel):
+    version: str
+    data: Dict[str, Any]
+
+
+class V6IncidentFeedbackListResponse(BaseModel):
+    version: str
+    limit: int
+    data: List[Dict[str, Any]]
+
+
+class V6RetrainingJobCreateRequest(BaseModel):
+    project_id: Optional[str] = None
+    scope: str = Field(default="global")
+    mode: str = Field(default="dataset_only")
+    actual_training_requested: Optional[bool] = None
+    requested_by: Optional[str] = Field(default=None, max_length=150)
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+
+
+class V6RetrainingJobResponse(BaseModel):
+    version: str
+    data: Dict[str, Any]
+
+
+class V6RetrainingJobListResponse(BaseModel):
+    version: str
+    limit: int
+    data: List[Dict[str, Any]]
+
+
+class V6ModelVersionResponse(BaseModel):
+    version: str
+    limit: Optional[int] = None
+    data: Any
+
+
+class V6ModelVersionActivateResponse(BaseModel):
+    version: str
+    data: Dict[str, Any]
+
+
+class V6ModelResolveResponse(BaseModel):
+    version: str
+    data: Dict[str, Any]
+
+
+class V6ActiveModelResponse(BaseModel):
+    version: str
+    data: Dict[str, Any]

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Date, DateTime, Float, Integer, String, Text, JSON, UniqueConstraint
+from sqlalchemy import Boolean, Column, Date, DateTime, Float, Integer, String, Text, JSON, UniqueConstraint
 from sqlalchemy.sql import func
 
 from backend.app.database import Base
@@ -391,3 +391,79 @@ class ProjectUsageEvent(Base):
     metadata_json = Column(JSON, nullable=True)
 
     created_at = Column(DateTime, server_default=func.now(), index=True)
+
+
+class IncidentFeedback(Base):
+    __tablename__ = "incident_feedback"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    feedback_id = Column(String(50), unique=True, index=True)
+    project_id = Column(String(50), nullable=True, index=True)
+    incident_id = Column(String(80), index=True)
+    prediction_id = Column(String(80), nullable=True, index=True)
+
+    label = Column(String(50), index=True)
+    confidence = Column(Float, nullable=True)
+    reviewer = Column(String(150), nullable=True)
+    note = Column(Text, nullable=True)
+    source = Column(String(50), default="manual", server_default="manual", index=True)
+
+    created_at = Column(DateTime, server_default=func.now(), index=True)
+    updated_at = Column(DateTime, nullable=True, onupdate=func.now())
+
+
+class RetrainingJob(Base):
+    __tablename__ = "retraining_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    job_id = Column(String(50), unique=True, index=True)
+    project_id = Column(String(50), nullable=True, index=True)
+    scope = Column(String(50), default="global", server_default="global", index=True)
+    status = Column(String(50), default="pending", server_default="pending", index=True)
+    mode = Column(String(50), default="dataset_only", server_default="dataset_only", index=True)
+    requested_by = Column(String(150), nullable=True)
+    actual_training_requested = Column(Boolean, default=False, server_default="false")
+    actual_training_executed = Column(Boolean, default=False, server_default="false")
+    active_model_replaced = Column(Boolean, default=False, server_default="false")
+
+    feedback_count = Column(Integer, default=0, server_default="0")
+    dataset_size = Column(Integer, default=0, server_default="0")
+    parameters_json = Column(Text, nullable=True)
+    metrics_json = Column(Text, nullable=True)
+    output_dataset_path = Column(Text, nullable=True)
+    output_artifact_path = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, server_default=func.now(), index=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+
+class ModelVersion(Base):
+    __tablename__ = "model_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    model_version_id = Column(String(50), unique=True, index=True)
+    project_id = Column(String(50), nullable=True, index=True)
+    scope = Column(String(50), default="global", server_default="global", index=True)
+    model_name = Column(
+        String(150),
+        default="sequence_transformer",
+        server_default="sequence_transformer",
+        index=True,
+    )
+    version_tag = Column(String(150), index=True)
+    status = Column(String(50), default="candidate", server_default="candidate", index=True)
+    is_default = Column(Boolean, default=False, server_default="false", index=True)
+    source_job_id = Column(String(50), nullable=True, index=True)
+    artifact_path = Column(Text, nullable=True)
+    metrics_json = Column(Text, nullable=True)
+    activated_by = Column(String(150), nullable=True)
+    activation_note = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, server_default=func.now(), index=True)
+    activated_at = Column(DateTime, nullable=True)
+    archived_at = Column(DateTime, nullable=True)

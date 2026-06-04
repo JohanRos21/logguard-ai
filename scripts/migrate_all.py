@@ -29,6 +29,14 @@ COMMANDS: list[tuple[str, list[str]]] = [
         "Apply V6 usage tracking migration",
         [sys.executable, str(ROOT_DIR / "scripts" / "migrate_v6_usage_tracking.py")],
     ),
+    (
+        "Apply V6 retraining migration",
+        [sys.executable, str(ROOT_DIR / "scripts" / "migrate_v6_retraining.py")],
+    ),
+    (
+        "Apply V6 model registry migration",
+        [sys.executable, str(ROOT_DIR / "scripts" / "migrate_v6_model_registry.py")],
+    ),
 ]
 
 

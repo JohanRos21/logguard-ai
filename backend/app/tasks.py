@@ -17,6 +17,7 @@ from backend.app.services.notification_service import (
 )
 from backend.app.services.real_incident_service import generate_real_incidents
 from backend.app.services.realtime_sequence_service import analyze_recent_entity_sequences
+from backend.app.services.retraining_service import run_retraining_job as run_retraining_job_service
 from backend.app.services.usage_service import increment_usage
 
 
@@ -280,3 +281,8 @@ def analyze_ingested_entity(
             "entity_id": str(entity_id),
             "error": str(error)[:250],
         }
+
+
+@app.task(name="logguard.run_retraining_job")
+def run_retraining_job(job_id: str):
+    return run_retraining_job_service(job_id=job_id)

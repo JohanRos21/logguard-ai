@@ -279,6 +279,40 @@ def increment_usage(
     return serialize_daily_usage(usage)
 
 
+def record_usage_event(
+    db: Session,
+    project_id: Optional[str],
+    event_type: str,
+    quantity: int = 1,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    if not project_id:
+        return None
+
+    quantity = int(quantity or 0)
+
+    if quantity <= 0:
+        return None
+
+    event = ProjectUsageEvent(
+        event_id=usage_event_id(db),
+        project_id=project_id,
+        event_type=str(event_type or "").strip(),
+        quantity=quantity,
+        metadata_json=metadata or {},
+    )
+    db.add(event)
+    db.flush()
+
+    return {
+        "event_id": event.event_id,
+        "project_id": event.project_id,
+        "event_type": event.event_type,
+        "quantity": event.quantity,
+        "created_at": serialize_value(event.created_at),
+    }
+
+
 def get_usage_summary(
     project_id: str,
     date_from: Optional[date] = None,
@@ -358,6 +392,25 @@ def increment_usage_safe(
                 db=session,
                 project_id=project_id,
                 metric=metric,
+                quantity=quantity,
+                metadata=metadata,
+            )
+    except Exception:
+        return None
+
+
+def record_usage_event_safe(
+    project_id: Optional[str],
+    event_type: str,
+    quantity: int = 1,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    try:
+        with get_db_session() as session:
+            return record_usage_event(
+                db=session,
+                project_id=project_id,
+                event_type=event_type,
                 quantity=quantity,
                 metadata=metadata,
             )

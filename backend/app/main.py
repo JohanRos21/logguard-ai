@@ -82,6 +82,29 @@ from backend.app.services.usage_service import (
     get_usage_summary,
     list_daily_usage,
 )
+from backend.app.services.retraining_service import (
+    RetrainingNotFoundError,
+    RetrainingPermissionError,
+    RetrainingServiceError,
+    RetrainingValidationError,
+    cancel_retraining_job,
+    create_incident_feedback,
+    create_retraining_job,
+    get_feedback_for_incident,
+    get_retraining_job,
+    list_incident_feedback,
+    list_model_versions,
+    list_retraining_jobs,
+    mark_retraining_job_failed,
+)
+from backend.app.services.model_registry_service import (
+    ModelRegistryError,
+    ModelRegistryNotFoundError,
+    ModelRegistryValidationError,
+    activate_model_version,
+    get_active_models,
+    resolve_model_for_project,
+)
 
 from backend.app.v4_schemas import (
     V4AdaptiveBatchRequest,
@@ -107,6 +130,16 @@ from backend.app.v6_schemas import (
     V6ProjectListResponse,
     V6ProjectPlanUpdateRequest,
     V6ProjectUpdateRequest,
+    V6IncidentFeedbackCreateRequest,
+    V6IncidentFeedbackListResponse,
+    V6IncidentFeedbackResponse,
+    V6ActiveModelResponse,
+    V6ModelVersionActivateResponse,
+    V6ModelVersionResponse,
+    V6ModelResolveResponse,
+    V6RetrainingJobCreateRequest,
+    V6RetrainingJobListResponse,
+    V6RetrainingJobResponse,
     V6UsageDailyResponse,
     V6UsageSummaryResponse,
 )
@@ -119,6 +152,7 @@ from celery.result import AsyncResult
 
 from backend.app.celery_app import app as celery_app
 from backend.app.tasks import ping_worker
+from backend.app.tasks import run_retraining_job as run_retraining_job_task
 
 
 RULE_ALERTS_PATH = "reports/rule_alerts.csv"
@@ -1099,6 +1133,22 @@ def project_error_response(error: Exception):
     raise error
 
 
+def retraining_error_response(error: Exception):
+    if isinstance(error, (RetrainingNotFoundError, ModelRegistryNotFoundError)):
+        raise HTTPException(status_code=404, detail=str(error))
+
+    if isinstance(error, RetrainingPermissionError):
+        raise HTTPException(status_code=403, detail=str(error))
+
+    if isinstance(error, (RetrainingValidationError, ModelRegistryValidationError)):
+        raise HTTPException(status_code=400, detail=str(error))
+
+    if isinstance(error, (RetrainingServiceError, ModelRegistryError)):
+        raise HTTPException(status_code=400, detail=str(error))
+
+    raise error
+
+
 def plan_limit_error_response(error: PlanLimitExceededError):
     raise HTTPException(
         status_code=429,
@@ -1358,6 +1408,246 @@ def v6_usage_me(
             date_to=date_to,
         ),
     }
+
+
+@app.post(
+    "/v6/incidents/{incident_id}/feedback",
+    response_model=V6IncidentFeedbackResponse,
+)
+def v6_create_incident_feedback(
+    incident_id: str,
+    request: V6IncidentFeedbackCreateRequest,
+    auth_context: Dict[str, Any] = Depends(get_v6_auth_context),
+):
+    try:
+        return {
+            "version": "v6",
+            "data": create_incident_feedback(
+                incident_id=incident_id,
+                label=request.label,
+                prediction_id=request.prediction_id,
+                project_id=request.project_id,
+                confidence=request.confidence,
+                reviewer=request.reviewer,
+                note=request.note,
+                source=request.source,
+                auth_project_id=project_id_from_auth_context(auth_context),
+            ),
+        }
+    except Exception as error:
+        retraining_error_response(error)
+
+
+@app.get(
+    "/v6/incidents/{incident_id}/feedback",
+    response_model=V6IncidentFeedbackListResponse,
+)
+def v6_get_incident_feedback(
+    incident_id: str,
+    limit: int = Query(default=50, ge=1, le=500),
+    auth_context: Dict[str, Any] = Depends(get_v6_auth_context),
+):
+    try:
+        return {
+            "version": "v6",
+            "limit": limit,
+            "data": get_feedback_for_incident(
+                incident_id=incident_id,
+                limit=limit,
+                auth_project_id=project_id_from_auth_context(auth_context),
+            ),
+        }
+    except Exception as error:
+        retraining_error_response(error)
+
+
+@app.get("/v6/feedback", response_model=V6IncidentFeedbackListResponse)
+def v6_list_feedback(
+    incident_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    label: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=500),
+    auth_context: Dict[str, Any] = Depends(get_v6_auth_context),
+):
+    try:
+        return {
+            "version": "v6",
+            "limit": limit,
+            "data": list_incident_feedback(
+                incident_id=incident_id,
+                project_id=project_id,
+                label=label,
+                limit=limit,
+                auth_project_id=project_id_from_auth_context(auth_context),
+            ),
+        }
+    except Exception as error:
+        retraining_error_response(error)
+
+
+@app.post("/v6/retraining/jobs", response_model=V6RetrainingJobResponse)
+def v6_create_retraining_job(
+    request: V6RetrainingJobCreateRequest,
+    _auth_context: Dict[str, Any] = Depends(validate_v6_master_api_key),
+):
+    try:
+        job = create_retraining_job(
+            project_id=request.project_id,
+            mode=request.mode,
+            scope=request.scope,
+            actual_training_requested=request.actual_training_requested,
+            requested_by=request.requested_by,
+            parameters=request.parameters,
+        )
+
+        try:
+            task = run_retraining_job_task.delay(job["job_id"])
+            job["queue_status"] = "queued"
+            job["task_id"] = task.id
+        except Exception as queue_error:
+            job = mark_retraining_job_failed(
+                job_id=job["job_id"],
+                error_message=f"Failed to enqueue Celery task: {str(queue_error)[:250]}",
+            )
+            job["queue_status"] = "failed"
+
+        return {
+            "version": "v6",
+            "data": job,
+        }
+    except Exception as error:
+        retraining_error_response(error)
+
+
+@app.get("/v6/retraining/jobs", response_model=V6RetrainingJobListResponse)
+def v6_list_retraining_jobs(
+    project_id: Optional[str] = None,
+    scope: Optional[str] = None,
+    status: Optional[str] = None,
+    mode: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=500),
+    _auth_context: Dict[str, Any] = Depends(validate_v6_master_api_key),
+):
+    try:
+        return {
+            "version": "v6",
+            "limit": limit,
+            "data": list_retraining_jobs(
+                project_id=project_id,
+                scope=scope,
+                status=status,
+                mode=mode,
+                limit=limit,
+            ),
+        }
+    except Exception as error:
+        retraining_error_response(error)
+
+
+@app.get("/v6/retraining/jobs/{job_id}", response_model=V6RetrainingJobResponse)
+def v6_get_retraining_job(
+    job_id: str,
+    _auth_context: Dict[str, Any] = Depends(validate_v6_master_api_key),
+):
+    try:
+        return {
+            "version": "v6",
+            "data": get_retraining_job(job_id),
+        }
+    except Exception as error:
+        retraining_error_response(error)
+
+
+@app.post("/v6/retraining/jobs/{job_id}/cancel", response_model=V6RetrainingJobResponse)
+def v6_cancel_retraining_job(
+    job_id: str,
+    _auth_context: Dict[str, Any] = Depends(validate_v6_master_api_key),
+):
+    try:
+        return {
+            "version": "v6",
+            "data": cancel_retraining_job(job_id),
+        }
+    except Exception as error:
+        retraining_error_response(error)
+
+
+@app.get("/v6/model-versions/active", response_model=V6ActiveModelResponse)
+def v6_active_model_versions(
+    project_id: Optional[str] = None,
+    _auth_context: Dict[str, Any] = Depends(validate_v6_master_api_key),
+):
+    try:
+        return {
+            "version": "v6",
+            "data": get_active_models(project_id=project_id),
+        }
+    except Exception as error:
+        retraining_error_response(error)
+
+
+@app.get("/v6/model-versions/resolve", response_model=V6ModelResolveResponse)
+def v6_resolve_model_version(
+    project_id: Optional[str] = None,
+    auth_context: Dict[str, Any] = Depends(get_v6_auth_context),
+):
+    effective_project_id = project_id_from_auth_context(auth_context) or project_id
+
+    try:
+        return {
+            "version": "v6",
+            "data": resolve_model_for_project(project_id=effective_project_id),
+        }
+    except Exception as error:
+        retraining_error_response(error)
+
+
+@app.get("/v6/model-versions", response_model=V6ModelVersionResponse)
+def v6_list_model_versions(
+    project_id: Optional[str] = None,
+    scope: Optional[str] = None,
+    status: Optional[str] = None,
+    model_name: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=500),
+    _auth_context: Dict[str, Any] = Depends(validate_v6_master_api_key),
+):
+    try:
+        return {
+            "version": "v6",
+            "limit": limit,
+            "data": list_model_versions(
+                project_id=project_id,
+                scope=scope,
+                status=status,
+                model_name=model_name,
+                limit=limit,
+            ),
+        }
+    except Exception as error:
+        retraining_error_response(error)
+
+
+@app.post(
+    "/v6/model-versions/{model_version_id}/activate",
+    response_model=V6ModelVersionActivateResponse,
+)
+def v6_activate_model_version(
+    model_version_id: str,
+    activated_by: Optional[str] = None,
+    activation_note: Optional[str] = None,
+    _auth_context: Dict[str, Any] = Depends(validate_v6_master_api_key),
+):
+    try:
+        return {
+            "version": "v6",
+            "data": activate_model_version(
+                model_version_id=model_version_id,
+                activated_by=activated_by or "master",
+                note=activation_note,
+            ),
+        }
+    except Exception as error:
+        retraining_error_response(error)
 
 
 @app.post("/v6/projects", response_model=V6ProjectItemResponse)
